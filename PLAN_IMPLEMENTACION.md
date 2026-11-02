@@ -336,30 +336,55 @@ NesGameStudio/
 ├── Cargo.toml                  # Aplicación GUI en Rust (eframe/egui, rfd, serde, image, cpal)
 ├── README.md                   # Descripción general y arquitectura en Mermaid
 ├── PLAN_IMPLEMENTACION.md      # Este documento de diseño e implementación
+├── templates/
+│   └── engine/                 # Cabeceras C modulares (~150 líneas c/u) listas para copiar/incluir
+│       ├── ngs_platform.h      # HAL Multiplataforma (Win32, SDL3/GDK Xbox, PS5, Switch, Web)
+│       ├── ngs_scroll_camera.h # Widescreen 16:9/21:9 + Scroll Horizontal, Vertical, Auto y 8-Way
+│       ├── ngs_collision.h     # Colisiones AABB Hitbox/Hurtbox, Tilemap Grid O(1) y Triggers
+│       ├── ngs_vfx_alpha.h     # Transparencia Alfa 0..255, Partículas, Estelas y Shaders 2D
+│       ├── ngs_lighting.h      # Iluminación Dinámica 2D y Sombras en Tiempo Real
+│       ├── ngs_ai_behaviors.h  # Comportamientos de IA y máquinas de estado para Jefes
+│       ├── ngs_rpg_dialogue.h  # Árboles de Diálogos, Banderas de Misión, Inventario y Tiendas RPG
+│       ├── ngs_cutscenes.h     # Director de Cinemáticas In-Engine ejecutadas en tiempo real
+│       ├── ngs_time_control.h  # Rebobinado en Vivo (Time Rewind) y Cámara Lenta (Bullet Time)
+│       ├── ngs_netplay.h       # Cooperativo Local 2-4P y Netplay Online P2P UDP
+│       └── ngs_overlay_ui.h    # Menú Overlay In-Game, Logros Desbloqueables y Speedrun Timer
 └── src/
     ├── main.rs                 # Ventana principal de NesGameStudio
     ├── project.rs              # Proyecto (.ngs.json), catálogo de pistas y carpeta assets/
     ├── parser/                 # Analizador y re-escritor automático de archivos .c y .asm
+    ├── transpiler/             # Transpilador de nuestro lenguaje NGScript (.ngscript -> scripts/*.h)
     ├── runtime/                # Motor de vista previa a 60 FPS y Rockola APU aislada
     ├── editors/
-    │   ├── graphics.rs         # Módulo 1: Galería total de gráficos CHR y Sprites HD 32-bit
-    │   ├── levels.rs           # Módulo 2: Editor de Pantallas NameTable y Niveles en C
-    │   ├── audio.rs            # Módulo 3: Rockola aislada (Sound Test) e Inyector .MP3 / .WAV
+    │   ├── graphics.rs         # Módulo 1: Galería total de gráficos CHR, Sprites HD y Timeline
+    │   ├── levels.rs           # Módulo 2: Editor de Mapas, Scrolling, Parallax, RPG y Cutscenes
+    │   ├── audio.rs            # Módulo 3: Rockola aislada, Generador Sfxr, Piano Roll y .MP3/.WAV
     │   └── ram_inspector.rs    # Módulo 4: Buscador de Variables RAM, Reglas y Visor .ASM <-> .C
-    └── codegen/                # Cirujano de código C y compilador automático a .exe nativo
+    └── codegen/                # Empaquetador de scripts/*.h y compilador automático a .exe nativo
 ```
 
 ---
 
-## 5. Fases de Implementación Propuestas
+## 5. Fases de Implementación, Estimación de Tiempo y Consumo de Tokens
 
-1. **Fase 1 — Base del Estudio, Carga de `.c`/`.asm` y Compilación Automática**:
-   - Interfaz principal con pestañas para los 4 módulos, analizador de arreglos `PRG_ROM[]`/`CHR_MEM[]` desde el `.c`, y botón de compilación directa a `.exe` nativo.
-2. **Fase 2 — Galería Completa de Gráficos y Estudio HD (8-bit `.BMP` + 32-bit RGBA)**:
-   - Visualizador de todos los bancos gráficos del juego, capturador de niveles `CHR-RAM`, editor de píxeles, importador de Sprites HD `.PNG`/`.BMP` e inyección automática del renderizador HD en el `.c`.
-3. **Fase 3 — Rockola Aislada de Música/Efectos (*Sound Test*) e Inyector `.MP3` / `.WAV`**:
-   - Reproductor aislado de pistas y efectos del juego con control Solo/Mute por canal, exportador a `.WAV` y reemplazo directo de pistas por archivos `.MP3`/`.WAV` inyectados en el `.c`.
-4. **Fase 4 — Vista Previa en Vivo, Buscador de Variables RAM y Modificador de Reglas**:
-   - Escáner interactivo de variables en `RAM`, etiquetador automático de `#define` y generador visual de reglas/trucos en C.
-5. **Fase 5 — Editor Visual de Pantallas y Creador de Niveles en C**:
-   - Lienzo de edición de escenarios, colocación de nuevas entidades C (*Overlay*) y creador de niveles 100% en C.
+Tomando como base el desarrollo de `NesEmuRust` (donde ya quedaron resueltos y probados el renderizador Win32 a 60 FPS, la síntesis APU de 5 canales con `waveOut` y el compilador `MSVC`), el desarrollo completo de `NesGameStudio` se divide en **5 Fases Modulares**:
+
+| Fase | Qué construimos | Tiempo Estimado | Consumo de Tokens Estimado | Por qué es rápido |
+| :--- | :--- | :---: | :---: | :--- |
+| **Fase 1: Base del IDE, Galería Gráfica y Rockola Aislada** | Ventana `egui`, lector de `.c`/`.asm`, visor de todos los sprites (`CHR`) y reproductor aislado de música/efectos (*Sound Test* + `.WAV`). | **~35 - 45 min** | 🟢 **Bajo (~40k - 60k)** | Reutilizamos directamente la PPU y APU que ya programamos en `NesEmuRust`. |
+| **Fase 2: Motor C (`templates/engine/*.h`) — Widescreen, Scroll, Colisiones y VFX** | Librerías C para cámara `16:9`, Scroll Horizontal/Vertical/8-Direcciones, *Parallax*, Colisiones (`AABB` + Mapa) e Iluminación 2D. | **~40 - 50 min** | 🟢 **Bajo-Medio (~60k - 80k)** | Son cabeceras `.h` independientes en C puro (~150 líneas cada una), muy rápidas de escribir y probar. |
+| **Fase 3: Lenguaje `NGScript` y Transpilador a C** | El traductor de `.ngscript` a `scripts/*.h` (IA de enemigos/jefes, estados, colisiones y creación de efectos/shaders propios sin tocar `main.c`). | **~40 - 50 min** | 🟡 **Medio (~70k - 90k)** | Un parser declarativo en Rust es muy compacto (~300 líneas) y genera código C limpio al instante. |
+| **Fase 4: Editor de Mapas, Diálogos RPG, Cinemáticas *In-Engine* y `Sfxr`** | Lienzo para pintar niveles/triggers, editor de diálogos RPG, línea de tiempo de escenas con el motor y generador de sonidos retro. | **~45 - 55 min** | 🟡 **Medio (~80k - 110k)** | Es la fase con más interfaz visual (`egui`), pero cada herramienta vive en su propia pestaña modular. |
+| **Fase 5: *Time Rewind*, Cooperativo 4P/Netplay, Logros y Compilación 1-Clic** | Rebobinado en vivo, *Bullet Time*, logros en pantalla, exportación multiplataforma y juego demo completo. | **~30 - 40 min** | 🟢 **Bajo (~40k - 60k)** | Conecta todos los módulos anteriores y empaqueta el `.exe` final con `cl.exe`. |
+| **TOTAL ESTIMADO** | **`NesGameStudio` Completo (5 Fases)** | **~3.5 horas** | **~290k - 400k tokens** | **Menos tokens de los que tomó depurar el emulador desde cero.** |
+
+---
+
+## 6. Estrategia de Optimización para Ahorrar hasta un 65% de Tokens
+
+1. **Archivos Pequeños y Modulares (Máximo ~200 líneas por archivo)**:
+   - En lugar de concatenar código C dentro de un archivo Rust monolítico gigante, cada subsistema del motor vive en su propio archivo `.h` dentro de `templates/engine/` (`ngs_collision.h`, `ngs_lighting.h`, `ngs_cutscenes.h`, etc.). Así, al programar o ajustar un módulo solo se lee y edita un archivo de ~150 líneas.
+2. **Trabajar directamente sobre el Workspace de `NesGameStudio`**:
+   - Abrir la carpeta `c:\Users\Cesar\Documents\AI Proyectos\NesGameStudio` permite tomar este [`PLAN_IMPLEMENTACION.md`](PLAN_IMPLEMENTACION.md) como punto de partida inmediato en cada sesión sin re-explicar el contexto.
+3. **Compactar o Iniciar Sesión Limpia al Concluir cada Fase**:
+   - Hacer `git commit` + `git push` al terminar cada una de las 5 fases y usar `/compact` (o abrir una conversación nueva para la siguiente fase) evita reenviar el historial de fases anteriores en cada mensaje.
