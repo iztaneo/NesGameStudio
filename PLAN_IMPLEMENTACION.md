@@ -255,10 +255,31 @@ flowchart TD
      3. **Zonas de Trigger / Sensores Invisibles (*Scene & RPG Triggers*)**:
         - Rectángulos invisibles que colocas en el mapa (ej. *"Zona de entrada al Jefe"* o *"Mostrador del Vendedor RPG"*). Al entrar el jugador en ese rectángulo, el motor dispara automáticamente el diálogo (`ngs_start_dialogue("mercader_01")`) o la escena cinemática (`ngs_play_cutscene("intro_jefe")`).
 
-3. **Efectos Visuales, Transparencias, Iluminación Dinámica 2D y Partículas (`engine/ngs_vfx_alpha.h` + `ngs_lighting.h`)**:
+3. **Efectos Visuales, Transparencias, Iluminación Dinámica 2D y Efectos Programables en `NGScript` (`engine/ngs_vfx_alpha.h` + `ngs_lighting.h` + `scripts/vfx_*.h`)**:
    - **Transparencia Real (`Alpha Blending 0..255`)**: Cualquier sprite, capa Parallax o neblina tiene una propiedad `alpha` (`0` = invisible, `128` = 50% translúcido, `255` = opaco) mezclada por canal `RGBA` de 32 bits.
    - **Iluminación Dinámica 2D y Sombras en Tiempo Real (`ngs_lighting.h`)**: Permite colocar fuentes de luz dinámicas (antorchas, explosiones, faroles, ciclos de día/noche o proyectiles láser que iluminan el piso y las paredes conforme viajan en la oscuridad) con atenuación radial suave sobre el `FRAMEBUFFER` de 32 bits.
-   - **Emisor de Partículas y Efectos de Cámara**: Funciones listas para usar desde cualquier script (`vfx_explosion(x, y)`, `vfx_sparks(x, y)`, `vfx_rain()`, `vfx_screen_shake(intensidad)`, `vfx_fade_in_out()`).
+   - **Efectos Prehechos + Creación de Efectos Propios desde `NGScript` (`efecto_particulas` y `shader_2d`)**:
+     - Además de los efectos listos para usar (`vfx_explosion`, `vfx_sparks`, `vfx_rain`, `vfx_screen_shake`), **puedes programar tus propios efectos visuales, magias RPG, estelas (*Afterimages*) y distorsiones de pantalla usando `NGScript`**, y el estudio los transpila a C nativo (`scripts/vfx_custom.h`):
+     ```text
+     // 1. Definir un emisor de partículas propio (ej. Hechizo de Fuego o Sangre/Chispas)
+     efecto_particulas "FuegoMagico" {
+         cantidad = 45
+         velocidad = (1.5 .. 4.0), angulo = (0 .. 360)
+         gravedad = -0.08               // Flota hacia arriba como brasas
+         color = #FFCC00 -> #FF2200     // Transición de amarillo a rojo
+         alfa = 255 -> 0, vida_frames = 40
+         mezcla = ADITIVO               // Brillo intenso al superponerse
+         luz_por_particula(radio = 18, color = #FF6600)
+     }
+
+     // 2. Definir un Shader 2D / Efecto de Post-Procesado por Scanline o Píxel
+     shader_2d "OndasBajoElAgua" {
+         para_cada_scanline(y):
+             desplazar_x(y, sin(y * 0.12 + tiempo * 0.08) * 3.5)
+             tinte_color(#80B0FF, fuerza = 0.25)
+     }
+     ```
+     - También incluye la directiva `estela_fantasma(intervalo = 3, alfa_inicial = 180, tinte = #00FFFF)` en `NGScript` para crear el clásico efecto de sombras translúcidas al hacer *dash* o ataques especiales (estilo *Castlevania: Symphony of the Night* o *Mega Man X*).
 
 4. **Inteligencia Artificial (IA) de Personajes y Jefes (`engine/ngs_ai_behaviors.h`)**:
    - **Comportamientos Preconstruidos Seleccionables**: Desde el editor puedes asignarle a cualquier enemigo una IA lista para usar sin escribir código:
