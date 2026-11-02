@@ -81,8 +81,9 @@ Permite **visualizar y editar todos los gráficos contenidos en el juego** sin v
 2. **Edición Visual y Reemplazo por Gráficos HD (32-bit RGBA)**:
    - **Modo Pixel Art (8-bit)**: Pincel visual y botón **"Exportar / Importar `.BMP`"** para editar en Paint, GIMP o Aseprite.
    - **Modo Remaster HD (16×16 / 32×32 TrueColor)**: Seleccionas cualquier sprite o bloque en la galería y eliges una imagen `.PNG` / `.BMP` de **32 bits (16.7 millones de colores + transparencia alfa)**.
-3. **Inyección Automática en el `.c`**:
-   - `NesGameStudio` modifica automáticamente `ppu_render_scanline()` en el archivo `.c`, amplía el `FRAMEBUFFER` a `512×480` (`2x`) o `1024×960` (`4x`) e inserta el código C que dibuja tus nuevos gráficos HD.
+3. **Inyección Automática en el `.c` y Soporte Widescreen 16:9 / 21:9 Real**:
+   - `NesGameStudio` modifica automáticamente `ppu_render_scanline()` en el archivo `.c`, amplía el `FRAMEBUFFER` y permite elegir entre relación **4:3 Clásica (`256×240` / `512×480` / `1024×960`)** o **Widescreen 16:9 Real sin estirar (`426×240` / `854×480` / `1280×720`)** y **21:9 Ultrawide**.
+   - En modo **Widescreen 16:9 Real**, el motor renderiza `85 píxeles` adicionales reales a cada lado desde las *NameTables* adyacentes y extiende las capas *Parallax*, manteniendo las barras de estado (HUD) centradas y permitiendo que los sprites y enemigos se dibujen en los márgenes laterales sin desaparecer a los 256 píxeles.
 
 ---
 
@@ -153,6 +154,7 @@ flowchart TD
     MAIN --> SCR["scripts/ (Scripts generados/traducidos a C e incluidos con #include)"]
 
     subgraph Motores["Sistemas del Motor (engine/)"]
+        CAM["ngs_widescreen.h (Cámara 16:9 Real 426x240 / 854x480 / 1280x720 HD y 21:9 sin estirar)"]
         COL["ngs_collision.h (Hitboxes AABB, Tilemap Sólido, Plataformas One-Way, Eventos on_collision)"]
         VFX["ngs_vfx_alpha.h (Alpha Blending 0..255, Luz Aditiva, Emisor de Partículas, Screen Shake)"]
         AI["ngs_ai_behaviors.h (Patrulla, Persecución, Disparo en 8 dir, Máquinas de Estado de Jefes)"]
@@ -164,6 +166,7 @@ flowchart TD
         S_ST["stage_01_script.h (Mapa, Capas Parallax y Triggers del nivel)"]
     end
 
+    ENG --> CAM
     ENG --> COL
     ENG --> VFX
     ENG --> AI
