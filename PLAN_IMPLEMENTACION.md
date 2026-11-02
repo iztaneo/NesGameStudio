@@ -144,18 +144,57 @@ Permite cambiar vidas, armas, velocidades, gravedad o trucos mediante controles 
 3. **Visor Sincronizado `.ASM` <-> `.C` (Radiografía Opcional)**:
    - Muestra lado a lado el ensamblador y el código C generado con casillas para activar/desactivar instrucciones específicas con un clic.
 
-### Módulo 5: Creador de Juegos Nuevos desde Cero (`🚀 Motor Gráfico 2D/2.5D & Plantillas`)
-Convierte a `NesGameStudio` en un **"Mini-Unity" especializado en juegos 2D / 2.5D Retro y HD**, capaz de generar juegos completamente nuevos en C nativo sin depender de una ROM base:
+### Módulo 5: Creador de Juegos Nuevos desde Cero (`🚀 Motor Gráfico 2D/2.5D, Colisiones, VFX, IA y Scripts`)
+Convierte a `NesGameStudio` en un **"Mini-Unity" especializado en juegos 2D / 2.5D Retro y HD**, separando estrictamente el **programa principal (`main.c`, que nunca se toca)** de los **sistemas del motor (`engine/`)** y de los **scripts de cada personaje o nivel (`scripts/`)** que se traducen a C y se conectan vía `#include`:
 
-1. **Plantillas de Género en C Limpio (Sin código 6502 heredado)**:
-   - **Acción / Run & Gun** (*estilo Contra / Metal Slug / Mega Man*): Física de salto, disparo en 8 direcciones, armas intercambiables, plataformas atravesables y jefes.
-   - **Plataformas Clásico** (*estilo Super Mario / Celeste*): Gravedad e inercia configurables, bloques interactivos, coleccionables y enemigos patrulleros.
-   - **Aventura Top-Down** (*estilo Zelda*): Exploración por habitaciones/mundo abierto, combate cuerpo a cuerpo/proyectiles, inventario, llaves y diálogos.
-   - **Shoot 'em Up (Naves)** (*estilo Gradius*): Scroll automático horizontal o vertical, oleadas de enemigos, *power-ups* y patrones de balas.
-2. **Biblioteca Global de Recursos y "Mashup"**:
-   - Todo gráfico, sprite, paleta o sonido que hayas abierto desde cualquier juego en `NesGameStudio` se puede guardar en tu **Biblioteca Global de Activos** para reutilizarlo o combinarlo en tu propio juego nuevo, junto con tus propios archivos `.PNG`, `.BMP`, `.MP3` y `.WAV`.
-3. **Exportación a Código C Limpio y Ejecutable `.EXE` Autónomo**:
-   - Genera un único proyecto `.c` limpio con el motor gráfico multicapa (*Parallax* + *Alpha Blending* de 32 bits), motor de audio híbrido (`APU` + `.MP3`/`.WAV`) y soporte de mandos USB/Bluetooth, compilándolo directamente a un `.exe` independiente de menos de `2 MB` sin requerir runtimes pesados.
+```mermaid
+flowchart TD
+    MAIN["main.c (Intacto: Ventana Win32 + Game Loop 60 FPS + Audio waveOut)"] --> ENG["engine/ (Librerías Base en C del Motor)"]
+    MAIN --> SCR["scripts/ (Scripts generados/traducidos a C e incluidos con #include)"]
+
+    subgraph Motores["Sistemas del Motor (engine/)"]
+        COL["ngs_collision.h (Hitboxes AABB, Tilemap Sólido, Plataformas One-Way, Eventos on_collision)"]
+        VFX["ngs_vfx_alpha.h (Alpha Blending 0..255, Luz Aditiva, Emisor de Partículas, Screen Shake)"]
+        AI["ngs_ai_behaviors.h (Patrulla, Persecución, Disparo en 8 dir, Máquinas de Estado de Jefes)"]
+    end
+
+    subgraph ScriptsJuego["Scripts Modulares del Juego (scripts/)"]
+        S_PL["player_script.h (on_spawn, on_update, on_collision)"]
+        S_EN["enemies_script.h (IA de enemigos y jefes traducida a C)"]
+        S_ST["stage_01_script.h (Mapa, Capas Parallax y Triggers del nivel)"]
+    end
+
+    ENG --> COL
+    ENG --> VFX
+    ENG --> AI
+    SCR --> S_PL
+    SCR --> S_EN
+    SCR --> S_ST
+```
+
+1. **Arquitectura de Scripts Traducidos e Incluidos (Sin tocar `main.c`)**:
+   - Cada personaje, enemigo, jefe o nivel tiene su propio script modular (con eventos estilo Unity: `on_spawn`, `on_update`, `on_collision`, `on_destroy`).
+   - `NesGameStudio` traduce las reglas visuales o scripts de alto nivel a archivos `.h` independientes dentro de `scripts/` y los enlaza automáticamente en el juego sin alterar el núcleo de `main.c`.
+
+2. **Sistema de Detección de Colisiones (`engine/ngs_collision.h`)**:
+   - **Colisiones de Escenario (*Tilemap Colliders*)**: En el editor pintas qué cuadros del mapa son **Sólidos (`SOLID`)**, **Plataformas Atravesables desde abajo (`ONE_WAY`, estilo *Contra*)**, **Escaleras (`LADDER`)**, **Agua (`WATER`)** o **Trampas de Daño (`HAZARD`)**. El motor resuelve automáticamente la gravedad, pendientes y topes de pared.
+   - **Cajas de Colisión por Entidad (*AABB Hitboxes & Hurtboxes*)**: Cada sprite tiene un rectángulo visual editable (`hitbox` de ataque y `hurtbox` de daño). Cuando dos cajas se tocan, el motor invoca automáticamente el evento `on_collision(self, other)` del script correspondiente.
+
+3. **Efectos Visuales, Transparencias y Partículas (`engine/ngs_vfx_alpha.h`)**:
+   - **Transparencia Real (`Alpha Blending 0..255`)**: Cualquier sprite, capa Parallax o neblina tiene una propiedad `alpha` (`0` = invisible, `128` = 50% translúcido, `255` = opaco) mezclada por canal `RGBA` de 32 bits.
+   - **Mezcla Aditiva de Luz (`Additive Blending / Glow`)**: Permite que disparos láser, fuego, explosiones y proyectiles sumen luz real sobre los píxeles del fondo.
+   - **Emisor de Partículas y Efectos de Cámara**: Funciones listas para usar desde cualquier script (`vfx_explosion(x, y)`, `vfx_sparks(x, y)`, `vfx_rain()`, `vfx_screen_shake(intensidad)`, `vfx_fade_in_out()`).
+
+4. **Inteligencia Artificial (IA) de Personajes y Jefes (`engine/ngs_ai_behaviors.h`)**:
+   - **Comportamientos Preconstruidos Seleccionables**: Desde el editor puedes asignarle a cualquier enemigo una IA lista para usar sin escribir código:
+     - `AI_PATROL_SMART`: Camina por una plataforma y da vuelta al detectar un borde o pared.
+     - `AI_TURRET_SNIPER`: Calcula el ángulo hacia `(player.x, player.y)` y dispara proyectiles dirigidos cada `N` frames.
+     - `AI_CHASER / JUMPER`: Persigue al jugador y salta obstáculos.
+     - `AI_FLYING_WAVE`: Movimiento aéreo senoidal o en picada.
+   - **Máquinas de Estado para Jefes (*Boss Scripting*)**: Permite encadenar fases visuales o por script (*"Fase 1: Dispara abanico -> Si `hp < 50%` -> Fase 2: Se vuelve semitransparente, tiembla la pantalla y embiste"*).
+
+5. **Plantillas de Género y Biblioteca Global de "Mashup"**:
+   - Incluye plantillas base (*Run & Gun*, *Plataformas*, *Top-Down Aventura*, *Shoot 'em Up*) y permite combinar recursos extraídos de cualquier juego NES con gráficos HD y sonidos propios.
 
 ---
 
