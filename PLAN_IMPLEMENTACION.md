@@ -82,17 +82,23 @@ Permite editar los escenarios existentes o agregar niveles completamente nuevos 
 
 ```mermaid
 flowchart LR
-    A["Lienzo Visual del Escenario"] --> B["Capa 1: NameTable Original (Editar bloques de fondo NES)"]
-    A --> C["Capa 2: Overlay de Entidades en C (Arrastrar nuevos enemigos, plataformas y jefes HD)"]
-    A --> D["Capa 3: Nivel Nuevo 100% en C (Diseñar mapas ilimitados fuera del 6502)"]
+    A["Lienzo Visual del Escenario"] --> P0["Capas Traseras Parallax (0.1x, 0.3x, 0.6x - Cielo, Montañas, Selva Lejana)"]
+    A --> B["Capa Jugable: NameTable Original + Sprites (1.0x)"]
+    A --> C["Capa Overlay en C: Nuevos Enemigos, Plataformas y Jefes HD (1.0x)"]
+    A --> PF["Capas Delanteras / Foreground (1.3x + Transparencia Alfa: Niebla, Lluvia, Árboles en 1er plano)"]
+    A --> D["Nivel Nuevo 100% en C (Mapa Libre Multicapa)"]
 ```
 
-1. **Editor Visual de Pantallas (`NameTables` + Atributos)**:
+1. **Sistema de Profundidad Multicapa (*Unlimited Parallax & Foreground Layers*)**:
+   - La NES original solo soportaba **1 capa de fondo** sin transparencia real. En `NesGameStudio` puedes agregar **múltiples capas de profundidad superpuestas** (tanto detrás del escenario como delante del jugador):
+     - **Capas de Fondo (*Back Parallax*, velocidad `0.0x` a `0.9x`)**: Se dibujan automáticamente detrás de los píxeles transparentes (`pixel == 0`) del escenario original, desplazándose de forma suave según la cámara acumulada del juego (`camera_world_x * factor_parallax`).
+     - **Capas de Primer Plano (*Foreground + Alpha Blending*, velocidad `1.1x` a `2.0x`)**: Se dibujan **por encima de los sprites y del escenario** usando canal Alfa de 32 bits (`RGBA`), permitiendo efectos modernos como neblina translúcida, lluvia, haces de luz (*god rays*), columnas o follaje que pasa frente a la cámara.
+2. **Editor Visual de Pantallas (`NameTables` + Atributos)**:
    - Muestra el escenario como un lienzo interactivo donde tomas bloques de la Galería Gráfica y los pintas directamente sobre el mapa.
-2. **Capa de Expansión en C (*Entity Overlay*)**:
+3. **Capa de Expansión en C (*Entity Overlay*)**:
    - Arrastras y sueltas **nuevos objetos, plataformas móviles, torretas o jefes HD** sobre cualquier nivel existente.
    - `NesGameStudio` escribe automáticamente las estructuras en C (`struct CustomEntity`), su física en punto flotante (`float`) y sus colisiones dentro del `.c`.
-3. **Creador de Niveles Nuevos (*Custom Stages*)**:
+4. **Creador de Niveles Nuevos (*Custom Stages*)**:
    - Diseñador de niveles desde cero sin el límite de 2 KB de RAM ni de 4 colores de la NES. `NesGameStudio` genera automáticamente la función `run_custom_stage_c()` y la conecta al flujo del juego en el archivo `.c`.
 
 ---
