@@ -145,15 +145,26 @@ Permite cambiar vidas, armas, velocidades, gravedad o trucos mediante controles 
 3. **Visor Sincronizado `.ASM` <-> `.C` (Radiografía Opcional)**:
    - Muestra lado a lado el ensamblador y el código C generado con casillas para activar/desactivar instrucciones específicas con un clic.
 
-### Módulo 5: Creador de Juegos Nuevos desde Cero (`🚀 Motor Gráfico 2D/2.5D, Colisiones, VFX, IA y Scripts`)
-Convierte a `NesGameStudio` en un **"Mini-Unity" especializado en juegos 2D / 2.5D Retro y HD**, separando estrictamente el **programa principal (`main.c`, que nunca se toca)** de los **sistemas del motor (`engine/`)** y de los **scripts de cada personaje o nivel (`scripts/`)** que se traducen a C y se conectan vía `#include`:
+### Módulo 5: Creador de Juegos Nuevos desde Cero (`🚀 Motor Nativo Sin 6502, Colisiones, VFX, IA y Multiplataforma`)
+Convierte a `NesGameStudio` en un **"Mini-Unity" especializado en juegos 2D / 2.5D Retro y HD**.
+
+> [!IMPORTANT]
+> **¿Usa el procesador 6502 un juego nuevo creado desde cero?**  
+> **NO.** Cuando creas un juego nuevo en `NesGameStudio`, **se elimina por completo la CPU 6502 (`switch(pc)`, registros `A, X, Y` y RAM de 2 KB)**. El juego corre sobre un **Bucle Propio 100% Nativo de `NesGameStudio` en C moderno (`ngs_engine_step_frame`)**, usando variables `float`, estructuras limpias (`NgsEntity`, `NgsWorld`) y memoria libre de 64 bits. *(El núcleo 6502 solo se incluye cuando abres un juego comercial antiguo de NES para modificarlo).*
 
 ```mermaid
 flowchart TD
-    MAIN["main.c (Intacto: Ventana Win32 + Game Loop 60 FPS + Audio waveOut)"] --> ENG["engine/ (Librerías Base en C del Motor)"]
-    MAIN --> SCR["scripts/ (Scripts generados/traducidos a C e incluidos con #include)"]
+    MAIN["main.c + ngs_platform.h (Intacto: Windows / Xbox / PS5 / Switch / Web)"] --> LOOP{"¿Tipo de Proyecto?"}
+    LOOP -->|"Juego Nuevo desde Cero"| NAT["ngs_engine_step_frame() (Bucle 100% Nativo C - CERO 6502)"]
+    LOOP -->|"Remaster de Juego NES"| HYB["nes_step_one_frame_60hz() (6502 Original + Overlay Nativo C)"]
+
+    NAT --> ENG["engine/ (Librerías Base en C del Motor)"]
+    HYB --> ENG
+    NAT --> SCR["scripts/ (Scripts generados/traducidos a C e incluidos con #include)"]
+    HYB --> SCR
 
     subgraph Motores["Sistemas del Motor (engine/)"]
+        PLAT["ngs_platform.h (HAL Multiplataforma: Win32, SDL3/GDK para Xbox Series X|S, PS5, Switch, WebAssembly)"]
         CAM["ngs_widescreen.h (Cámara 16:9 Real 426x240 / 854x480 / 1280x720 HD y 21:9 sin estirar)"]
         COL["ngs_collision.h (Hitboxes AABB, Tilemap Sólido, Plataformas One-Way, Eventos on_collision)"]
         VFX["ngs_vfx_alpha.h (Alpha Blending 0..255, Luz Aditiva, Emisor de Partículas, Screen Shake)"]
@@ -166,6 +177,7 @@ flowchart TD
         S_ST["stage_01_script.h (Mapa, Capas Parallax y Triggers del nivel)"]
     end
 
+    ENG --> PLAT
     ENG --> CAM
     ENG --> COL
     ENG --> VFX
@@ -174,6 +186,16 @@ flowchart TD
     SCR --> S_EN
     SCR --> S_ST
 ```
+
+0. **Bucle Propio de `NesGameStudio` para Juegos Nuevos (`ngs_engine_step_frame`)**:
+   - En lugar de simular ciclos de un procesador de 1983, ejecuta 7 pasos limpios en C cada `16.6 ms` (`60 FPS`):
+     1. `ngs_input_poll()` — Lee mandos modernos (Teclado, Xbox, DualSense PS5).
+     2. `ngs_camera_update()` — Calcula el encuadre Widescreen `16:9` / `21:9` y los desplazamientos de las capas *Parallax*.
+     3. `ngs_scripts_update()` — Ejecuta los scripts `on_update()` del jugador, enemigos y jefes.
+     4. `ngs_physics_and_collisions()` — Aplica velocidades en `float`, gravedad, colisión con el mapa (`SOLID`, `ONE_WAY`) y cajas `AABB`, disparando `on_collision()`.
+     5. `ngs_vfx_update()` — Actualiza partículas, luces aditivas, transparencias alfa (`0..255`) y temblor de cámara.
+     6. `ngs_render_scene_hd()` — Compone todas las capas *Parallax*, sprites HD y *Foreground* en el `FRAMEBUFFER`.
+     7. `ngs_audio_mix()` — Mezcla pistas `.MP3`/`.WAV` y efectos *chiptune* opcionales.
 
 1. **Arquitectura de Scripts Traducidos e Incluidos (Sin tocar `main.c`)**:
    - Cada personaje, enemigo, jefe o nivel tiene su propio script modular (con eventos estilo Unity: `on_spawn`, `on_update`, `on_collision`, `on_destroy`).
@@ -198,6 +220,13 @@ flowchart TD
 
 5. **Plantillas de Género y Biblioteca Global de "Mashup"**:
    - Incluye plantillas base (*Run & Gun*, *Plataformas*, *Top-Down Aventura*, *Shoot 'em Up*) y permite combinar recursos extraídos de cualquier juego NES con gráficos HD y sonidos propios.
+
+6. **Exportación Multiplataforma a PC, Consolas (`PS5`, `Xbox Series X|S`, `Switch`) y Web (`engine/ngs_platform.h`)**:
+   - Como el 100% del motor gráfico (`FRAMEBUFFER[]` en RAM), física, colisiones, IA y mezclador de audio (`audio_frame_samples[]` en RAM) está escrito en **C99/C11 estándar puro sin dependencias del sistema operativo**, sólo la capa final de presentación (`engine/ngs_platform.h`) cambia según la plataforma destino:
+     - **Windows Nativo (Sin DLLs externas)**: `Win32 GDI (StretchDIBits)` + `waveOut` + `XInput / joyGetPosEx`.
+     - **Xbox Series X|S / Xbox One (GDK / UWP / Modo Desarrollador)**: Compila directamente con `MSVC` usando el backend `SDL2`/`SDL3` o `DirectX 12 + XAudio2 + GameInput`.
+     - **PlayStation 5 / Nintendo Switch / Linux / Steam Deck / Android**: Compila con `Clang` usando el backend estándar `SDL2`/`SDL3` (ya soportado oficialmente en los SDKs de consola).
+     - **Navegador Web (HTML5 / WebAssembly)**: Compila con `Emscripten` para correr directo en el navegador.
 
 ---
 
