@@ -205,9 +205,9 @@ flowchart TD
    - **Colisiones de Escenario (*Tilemap Colliders*)**: En el editor pintas qué cuadros del mapa son **Sólidos (`SOLID`)**, **Plataformas Atravesables desde abajo (`ONE_WAY`, estilo *Contra*)**, **Escaleras (`LADDER`)**, **Agua (`WATER`)** o **Trampas de Daño (`HAZARD`)**. El motor resuelve automáticamente la gravedad, pendientes y topes de pared.
    - **Cajas de Colisión por Entidad (*AABB Hitboxes & Hurtboxes*)**: Cada sprite tiene un rectángulo visual editable (`hitbox` de ataque y `hurtbox` de daño). Cuando dos cajas se tocan, el motor invoca automáticamente el evento `on_collision(self, other)` del script correspondiente.
 
-3. **Efectos Visuales, Transparencias y Partículas (`engine/ngs_vfx_alpha.h`)**:
+3. **Efectos Visuales, Transparencias, Iluminación Dinámica 2D y Partículas (`engine/ngs_vfx_alpha.h` + `ngs_lighting.h`)**:
    - **Transparencia Real (`Alpha Blending 0..255`)**: Cualquier sprite, capa Parallax o neblina tiene una propiedad `alpha` (`0` = invisible, `128` = 50% translúcido, `255` = opaco) mezclada por canal `RGBA` de 32 bits.
-   - **Mezcla Aditiva de Luz (`Additive Blending / Glow`)**: Permite que disparos láser, fuego, explosiones y proyectiles sumen luz real sobre los píxeles del fondo.
+   - **Iluminación Dinámica 2D y Sombras en Tiempo Real (`ngs_lighting.h`)**: Permite colocar fuentes de luz dinámicas (antorchas, explosiones, faroles, ciclos de día/noche o proyectiles láser que iluminan el piso y las paredes conforme viajan en la oscuridad) con atenuación radial suave sobre el `FRAMEBUFFER` de 32 bits.
    - **Emisor de Partículas y Efectos de Cámara**: Funciones listas para usar desde cualquier script (`vfx_explosion(x, y)`, `vfx_sparks(x, y)`, `vfx_rain()`, `vfx_screen_shake(intensidad)`, `vfx_fade_in_out()`).
 
 4. **Inteligencia Artificial (IA) de Personajes y Jefes (`engine/ngs_ai_behaviors.h`)**:
@@ -218,10 +218,30 @@ flowchart TD
      - `AI_FLYING_WAVE`: Movimiento aéreo senoidal o en picada.
    - **Máquinas de Estado para Jefes (*Boss Scripting*)**: Permite encadenar fases visuales o por script (*"Fase 1: Dispara abanico -> Si `hp < 50%` -> Fase 2: Se vuelve semitransparente, tiembla la pantalla y embiste"*).
 
-5. **Plantillas de Género y Biblioteca Global de "Mashup"**:
-   - Incluye plantillas base (*Run & Gun*, *Plataformas*, *Top-Down Aventura*, *Shoot 'em Up*) y permite combinar recursos extraídos de cualquier juego NES con gráficos HD y sonidos propios.
+5. **Poderes de Tiempo: Rebobinado en Vivo (*Time Rewind*) y Cámara Lenta (*Bullet Time*) (`engine/ngs_time_control.h`)**:
+   - **Buffer Circular de Estados (`600 frames` / 10 segundos)**: Como el estado completo del juego en C ocupa apenas unos kilobytes por frame, el motor guarda un historial continuo en memoria RAM.
+   - **Time Rewind & Bullet Time**: Con activar una casilla en `NesGameStudio`, el jugador puede mantener presionado un gatillo o tecla para **rebobinar el tiempo en vivo** (con filtro visual tipo VHS) si cometió un error, o activar **Cámara Lenta (*Bullet Time* a `0.25x` / `0.5x`)** para esquivar lluvias de proyectiles.
 
-6. **Exportación Multiplataforma a PC, Consolas (`PS5`, `Xbox Series X|S`, `Switch`) y Web (`engine/ngs_platform.h`)**:
+6. **Editor de Animaciones (*Sprite Timeline*), Cinemáticas (*Cutscenes*) y Diálogos Multi-Idioma (`engine/ngs_cutscenes.h`)**:
+   - **Línea de Tiempo de Animación (*Timeline*)**: Editor visual para armar secuencias de cuadros (*Idle, Correr, Saltar, Disparar, Morir*), ajustar la duración en milisegundos de cada cuadro, editar su *Hitbox* por frame y vincular en qué cuadro exacto se dispara un sonido o proyectil.
+   - **Creador de Cinemáticas y Cajas de Diálogo**: Herramienta visual para crear introducciones, escenas entre niveles y diálogos con retratos animados, efecto de máquina de escribir y soporte de traducción (ej. Español / Inglés).
+
+7. **Generador de Efectos Retro (*Sfxr*) y *Piano Roll* Musical Integrado (en el Módulo 3)**:
+   - **Generador de Sonidos en 1 Clic (*Sfxr Integrado*)**: Botones instantáneos (*"🔊 Generar Disparo"*, *"💥 Generar Explosión"*, *"🪙 Generar Moneda/Ítem"*, *"🦘 Generar Salto"*, *"⚡ Generar Láser"*) con deslizadores de tono, caída y vibrato que sintetizan nuevos efectos `.WAV` o secuencias APU dentro del estudio.
+   - **Teclado y *Piano Roll* Chiptune**: Editor musical por notas para componer melodías nuevas desde cero sin programas externos.
+
+8. **Multijugador de 2 a 4 Jugadores: Cooperativo Local y *Netplay* Online P2P (`engine/ngs_netplay.h`)**:
+   - **Hasta 4 Mandos simultáneos**: Soporte para 2 a 4 jugadores en pantalla tanto en juegos nuevos como inyectando un compañero cooperativo en juegos clásicos.
+   - **Netplay P2P Ligero (`winsock2.lib` UDP)**: Sincronización determinista de entradas (*Input Lockstep / Rollback ligero*) que permite jugar cooperativo en línea entre dos PCs enviando únicamente los bytes de botones de cada frame.
+
+9. **Sistema de Logros (*Achievements*), Menú de Pausa *Overlay* Moderno y *Speedrun Timer* (`engine/ngs_overlay_ui.h`)**:
+   - **Menú *Overlay* In-Game**: Inyecta en el ejecutable `.exe` un menú moderno al presionar `Esc` / `Start` con guardado/carga instantánea en múltiples ranuras, reconfiguración de controles y ajuste de volumen.
+   - **Logros Desbloqueables y Cronómetro de Speedrun**: Permite definir logros visuales en el estudio (ej. *"Pasar el Nivel 1 sin perder vidas"* o *"Derrotar al Jefe en menos de 40s"*) que muestran una notificación animada en pantalla al cumplirse y guardan las medallas y récords de tiempo en disco.
+
+10. **Plantillas de Género y Biblioteca Global de "Mashup"**:
+    - Incluye plantillas base (*Run & Gun*, *Plataformas*, *Top-Down Aventura*, *Shoot 'em Up*) y permite combinar recursos extraídos de cualquier juego NES con gráficos HD y sonidos propios.
+
+11. **Exportación Multiplataforma a PC, Consolas (`PS5`, `Xbox Series X|S`, `Switch`) y Web (`engine/ngs_platform.h`)**:
    - Como el 100% del motor gráfico (`FRAMEBUFFER[]` en RAM), física, colisiones, IA y mezclador de audio (`audio_frame_samples[]` en RAM) está escrito en **C99/C11 estándar puro sin dependencias del sistema operativo**, sólo la capa final de presentación (`engine/ngs_platform.h`) cambia según la plataforma destino:
      - **Windows Nativo (Sin DLLs externas)**: `Win32 GDI (StretchDIBits)` + `waveOut` + `XInput / joyGetPosEx`.
      - **Xbox Series X|S / Xbox One (GDK / UWP / Modo Desarrollador)**: Compila directamente con `MSVC` usando el backend `SDL2`/`SDL3` o `DirectX 12 + XAudio2 + GameInput`.
