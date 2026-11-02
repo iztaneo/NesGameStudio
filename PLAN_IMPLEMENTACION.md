@@ -201,13 +201,59 @@ flowchart TD
      6. `ngs_render_scene_hd()` — Compone todas las capas *Parallax*, sprites HD y *Foreground* en el `FRAMEBUFFER`.
      7. `ngs_audio_mix()` — Mezcla pistas `.MP3`/`.WAV` y efectos *chiptune* opcionales.
 
-1. **Arquitectura de Scripts Traducidos e Incluidos (Sin tocar `main.c`)**:
-   - Cada personaje, enemigo, jefe o nivel tiene su propio script modular (con eventos estilo Unity: `on_spawn`, `on_update`, `on_collision`, `on_destroy`).
-   - `NesGameStudio` traduce las reglas visuales o scripts de alto nivel a archivos `.h` independientes dentro de `scripts/` y los enlaza automáticamente en el juego sin alterar el núcleo de `main.c`.
+1. **Lenguaje Propio de Comportamiento (`NGScript` / `.ngscript`) Transpilado Automáticamente a C (Sin tocar `main.c`)**:
+   - Para que no tengas que lidiar con punteros de C (`*`), cabeceras ni errores de sintaxis, **crearemos nuestro propio lenguaje declarativo de comportamiento (`NGScript`)** que puede editarse como texto ultra-simple o mediante bloques visuales en el estudio.
+   - **¿Cómo funciona por dentro?** `NesGameStudio` incluye un **Transpilador (`NGScript -> C99`)**: tú escribes en `.ngscript`, y al guardar, el estudio traduce tu lógica a un archivo `.h` en C optimizado (`scripts/jefe_alien.h`) y actualiza automáticamente la tabla maestra `scripts/ngs_scripts_registry.h`. **El bucle del juego en `main.c` jamás se toca a mano**.
+   - **Ejemplo de lo que escribes en `NGScript` (`jefe_alien.ngscript`)**:
+     ```text
+     entidad JefeAlien (vida = 100, capa = ENEMIGO) {
+         estado PATRULLA {
+             mover_x(velocidad = 1.5, rebotar_en_pared = true)
+             cada 90 frames:
+                 disparar("BalaPlasma", hacia = JUGADOR, velocidad = 4.0)
+             si vida < 50:
+                 iniciar_escena("cutscene_jefe_furia")
+                 cambiar_estado(FURIA)
+         }
 
-2. **Sistema de Detección de Colisiones (`engine/ngs_collision.h`)**:
-   - **Colisiones de Escenario (*Tilemap Colliders*)**: En el editor pintas qué cuadros del mapa son **Sólidos (`SOLID`)**, **Plataformas Atravesables desde abajo (`ONE_WAY`, estilo *Contra*)**, **Escaleras (`LADDER`)**, **Agua (`WATER`)** o **Trampas de Daño (`HAZARD`)**. El motor resuelve automáticamente la gravedad, pendientes y topes de pared.
-   - **Cajas de Colisión por Entidad (*AABB Hitboxes & Hurtboxes*)**: Cada sprite tiene un rectángulo visual editable (`hitbox` de ataque y `hurtbox` de daño). Cuando dos cajas se tocan, el motor invoca automáticamente el evento `on_collision(self, other)` del script correspondiente.
+         estado FURIA {
+             transparencia(160)
+             luz_dinamica(radio = 80, color = ROJO)
+             perseguir(JUGADOR, velocidad = 2.8)
+         }
+
+         al_colisionar_con(BALA_JUGADOR, proyectil):
+             restar_vida(proyectil.dano)
+             efecto_particulas("chispas", x, y)
+             destruir(proyectil)
+             si vida <= 0:
+                 efecto_explosion_hd(x, y)
+                 desbloquear_logro("CAZADOR_DE_ALIENS")
+                 destruir(este)
+     }
+     ```
+   - **Lo que `NesGameStudio` genera e incluye solo en `scripts/jefe_alien.h`**:
+     - Genera las funciones `jefe_alien_on_update(NgsEntity* self)` y `jefe_alien_on_collision(NgsEntity* self, NgsEntity* other)` y las registra automáticamente en el arreglo de punteros a función `g_entity_vtable[]` dentro de `scripts/ngs_scripts_registry.h`.
+
+2. **Sistema de Detección de Colisiones Automático (`engine/ngs_collision.h`) — Sin tocar el Bucle Principal**:
+   - El bucle principal (`ngs_engine_step_frame()`) llama siempre a `ngs_physics_and_collisions()`, el cual resuelve **3 niveles de colisión de forma automática en cada frame (60 FPS)**:
+     1. **Colisión Entidad vs. Mapa (*Tilemap Grid Collider — O(1)*)**:
+        - En el editor pintas sobre el escenario una máscara invisible con el tipo de cada bloque: `SOLID` (pared/piso), `ONE_WAY` (plataforma atravesable desde abajo estilo *Contra*), `SLOPE_45` (rampa/escalera diagonal), `LADDER` (escalera), `WATER` (agua) o `WARP_DOOR` (puerta a otro mapa/tienda RPG).
+        - El motor detiene la caída por gravedad al pisar `SOLID`/`ONE_WAY`, empuja al personaje fuera de las paredes y activa el flag `self->on_ground = 1`.
+     2. **Colisión Entidad vs. Entidad (*AABB Hitbox / Hurtbox + Capas de Máscara*)**:
+        - En el editor dibujas dos rectángulos sobre cada sprite:
+          - 🟩 **`Hurtbox` (Caja Vulnerable)**: dónde puede recibir daño o recoger ítems.
+          - 🟥 **`Hitbox` (Caja de Ataque)**: el filo de una espada, un proyectil o el cuerpo de un enemigo.
+        - Cada entidad pertenece a una **Capa (`LAYER_PLAYER`, `LAYER_ENEMY`, `LAYER_PLAYER_BULLET`, `LAYER_ENEMY_BULLET`, `LAYER_ITEM`, `LAYER_NPC`)**. El motor compara únicamente las capas que deben chocar entre sí y, cuando dos rectángulos se intersectan:
+          ```c
+          if (ngs_aabb_overlap(a->hitbox_world, b->hurtbox_world)) {
+              // Despacha automáticamente al script traducido de A y de B sin tocar main.c:
+              g_entity_vtable[a->script_id].on_collision(a, b);
+              g_entity_vtable[b->script_id].on_collision(b, a);
+          }
+          ```
+     3. **Zonas de Trigger / Sensores Invisibles (*Scene & RPG Triggers*)**:
+        - Rectángulos invisibles que colocas en el mapa (ej. *"Zona de entrada al Jefe"* o *"Mostrador del Vendedor RPG"*). Al entrar el jugador en ese rectángulo, el motor dispara automáticamente el diálogo (`ngs_start_dialogue("mercader_01")`) o la escena cinemática (`ngs_play_cutscene("intro_jefe")`).
 
 3. **Efectos Visuales, Transparencias, Iluminación Dinámica 2D y Partículas (`engine/ngs_vfx_alpha.h` + `ngs_lighting.h`)**:
    - **Transparencia Real (`Alpha Blending 0..255`)**: Cualquier sprite, capa Parallax o neblina tiene una propiedad `alpha` (`0` = invisible, `128` = 50% translúcido, `255` = opaco) mezclada por canal `RGBA` de 32 bits.
