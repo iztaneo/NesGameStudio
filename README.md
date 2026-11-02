@@ -2,7 +2,7 @@
 
 **`NesGameStudio`** es un entorno de desarrollo visual (IDE) independiente diseñado para cargar los archivos **`.c`** y **`.asm`** generados por el recompilador estático de [**`NesEmuRust`**](https://github.com/iztaneo/NesEmuRust).
 
-Su propósito es permitir **visualizar, editar, modernizar y expandir** cualquier juego clásico de NES traducido a C (cambiando sprites a alta definición de 32 bits, editando pantallas, creando niveles nuevos en C puro, inyectando música `.MP3` / efectos `.WAV` y modificando reglas de juego) **sin tener que programar en ensamblador 6502 ni editar arreglos hexadecimales a mano**.
+Su propósito es permitir **visualizar todos los gráficos del juego, reproducir aisladamente toda su música y efectos de sonido, editar pantallas, crear niveles nuevos y modernizar el juego con gráficos HD de 32 bits y audio `.MP3`/`.WAV`**, inyectando todos los cambios **automáticamente en el código C** sin que el usuario tenga que saber programar en C ni en ensamblador 6502.
 
 ---
 
@@ -16,20 +16,20 @@ flowchart TD
     end
 
     subgraph NucleoStudio["2. Núcleo de NesGameStudio (Aplicación GUI en Rust + egui)"]
-        PARSER["Analizador Estructural de Juego.c y Juego.asm"]
-        PREVIEW["Motor de Ejecución en Vivo (Sandbox Preview a 60 FPS)"]
+        PARSER["Analizador Estructural de Juego.c y Juego.asm (PRG_ROM / CHR_MEM / Rutinas)"]
+        PREVIEW["Motor de Ejecución y Sondeo Aislado (Video 60 FPS + Motor APU Independiente)"]
         PROJ["Proyecto de Estudio (Juego.ngs.json + Carpeta assets/)"]
     end
 
     subgraph Modulos["3. Los 4 Módulos Visuales de Edición"]
-        M_GFX["Módulo 1: Estudio Gráfico (CHR 8x8 + Sprites HD 32-bit RGBA)"]
+        M_GFX["Módulo 1: Galería Total de Gráficos y Estudio HD (CHR + Sprites 32-bit RGBA)"]
         M_LVL["Módulo 2: Editor de Pantallas, Mapas y Nuevos Niveles en C"]
-        M_AUD["Módulo 3: Estudio de Audio (Mezclador APU + Inyector .MP3 / .WAV)"]
-        M_RAM["Módulo 4: Buscador de Variables RAM + Visor Sincronizado .ASM <-> .C"]
+        M_AUD["Módulo 3: Rockola Aislada de Música/SFX + Inyector .MP3 / .WAV"]
+        M_RAM["Módulo 4: Buscador de Variables RAM + Modificador Visual de Reglas"]
     end
 
-    subgraph Salida["4. Generador de Port Remasterizado"]
-        INJECT["Inyector de Código C (Hooks de Video HD, Audio, Niveles y Reglas)"]
+    subgraph Salida["4. Inyector Automático C y Compilador Nativo"]
+        INJECT["Cirujano de Código C (Inyecta Hooks HD, Audio, Niveles y Reglas automáticamente)"]
         COMPILER["Compilador Nativo (MSVC cl.exe / GCC / Clang)"]
         FINAL_EXE["Juego Remasterizado Independiente (Juego_Remaster_x64.exe + assets/)"]
     end
@@ -49,7 +49,7 @@ flowchart TD
     M_AUD --> INJECT
     M_RAM --> INJECT
 
-    INJECT -->|"Genera Juego_Mod.c"| COMPILER
+    INJECT -->|"Reescribe Juego_Mod.c automáticamente"| COMPILER
     COMPILER --> FINAL_EXE
 ```
 
@@ -57,33 +57,34 @@ flowchart TD
 
 ## Los 4 Módulos Principales
 
-| Módulo | Función Principal | Qué Evita Hacer a Mano |
+| Módulo | Función Principal | Qué Hace Automáticamente en el `.C` |
 | :--- | :--- | :--- |
-| **1. Estudio Gráfico (`🎨 Sprites & HD Packs`)** | Decodifica `CHR_MEM` y `OAM` en vivo como mapas de bits visibles, permite pintar píxeles, exportar/importar `.BMP` y reemplazar tiles de `8×8` (4 colores) por **Sprites HD (`16×16` / `32×32` RGBA de 32 bits)**. | Editar bytes hexadecimales (`0x3C, 0x7E...`) o lidiar con planos de 2 bits. |
-| **2. Editor de Pantallas y Niveles (`🗺️ Escenarios & Niveles C`)** | Lienzo visual tipo *Tiled* para editar pantallas existentes (`NameTables`), superponer nuevas entidades/enemigos en C (*Overlay*) o diseñar **niveles nuevos 100% en C**. | Descifrar punteros comprimidos de mapas en `PRG_ROM` o límites de 2 KB de RAM. |
-| **3. Estudio de Audio (`🎵 APU + .MP3 / .WAV`)** | Silencia selectivamente canales 8-bit de la APU y asocia pistas **`.MP3`** (música de fondo) y efectos **`.WAV`** polifónicos a eventos o cambios de `RAM`. | Programar llamadas a `winmm.lib` o rastrear rutinas de sonido en ensamblador. |
-| **4. Inspector RAM y Visor `.ASM` <-> `.C` (`🔍 Símbolos & Reglas`)** | Escáner de memoria en vivo para descubrir qué casilla de `RAM` guarda vidas, armas o coordenadas `(X, Y)`, renombrarlas a `#define` legibles y cruzar cada instrucción `.asm` con su línea en `.c`. | Leer miles de líneas de ensamblador 6502 para encontrar una variable. |
+| **1. Galería Total de Gráficos (`🎨 Todos los Sprites & HD Packs`)** | Muestra **todos los bancos gráficos del juego** decodificados en pantalla, arma los personajes completos (*metasprites*), permite pintarlos o reemplazarlos por imágenes **`.PNG` / `.BMP` HD de 32 bits (16.7M colores)**. | Amplía el `FRAMEBUFFER` a HD (`512×480` / `1024×960`) e inyecta el renderizador de texturas de 32 bits en `ppu_render_scanline()`. |
+| **2. Editor de Pantallas y Niveles (`🗺️ Escenarios & Niveles C`)** | Lienzo visual tipo *Tiled* para editar pantallas existentes (`NameTables`), arrastrar nuevos enemigos/plataformas (*Overlay*) o diseñar **niveles nuevos completos**. | Genera los arreglos de mapas, estructuras de entidades (`struct CustomEntity`) y la función `run_custom_stage_c()` dentro del `.c`. |
+| **3. Rockola Aislada y Estudio de Audio (`🎵 Sound Test + .MP3 / .WAV`)** | **Reproduce aisladamente cada canción y efecto de sonido del juego** (*Sound Test / Jukebox*) con control *Solo/Mute* por canal, exporta pistas a `.WAV` y permite reemplazarlas con un clic por archivos **`.MP3`** o **`.WAV`**. | Inyecta el interceptor de pistas en la APU/RAM, silencia la melodía 8-bit reemplazada y conecta `mciSendStringA` (`.mp3`) y el mezclador `.wav` a `44.1 kHz`. |
+| **4. Buscador RAM y Reglas (`🔍 Variables & Trucos Visuales`)** | Escáner en vivo para descubrir qué casilla de `RAM` guarda vidas, armas o coordenadas `(X, Y)` y modificar sus reglas mediante menús visuales (con visor `.ASM` <-> `.C` opcional). | Escribe los `#define` con nombres legibles y agrega la lógica de modificación de variables en el bucle principal del `.c`. |
 
 ---
 
-## Flujo de Trabajo de Edición e Inyección
+## Flujo de Trabajo del Usuario (Sin Tocar Código)
 
 ```mermaid
 sequenceDiagram
     participant User as Creador / Modder
-    participant Studio as NesGameStudio (GUI)
-    participant Preview as Vista Previa en Vivo (60 FPS)
-    participant Codegen as Inyector C + Compilador x64
+    participant Studio as NesGameStudio (GUI Visual)
+    participant Jukebox as Galería Gráfica + Rockola Aislada
+    participant Codegen as Inyector Automático C + Compilador x64
 
     User->>Studio: 1. Abre Juego.c y Juego.asm (generados por NesEmuRust)
-    Studio->>Preview: 2. Ejecuta el juego en vivo y captura RAM, CHR_MEM, OAM y NameTables
-    User->>Studio: 3. Edita Sprites (.BMP / HD 32-bit), Pantallas, Audio (.MP3/.WAV) y Variables RAM
-    Studio->>Codegen: 4. Inyecta Hooks en C (ppu_render_hd, apu_mix_wav, run_custom_stage_c)
-    Codegen-->>User: 5. Compila y lanza Juego_Remaster_x64.exe autónomo
+    Studio->>Jukebox: 2. Extrae y muestra TODOS los gráficos y lista todas las canciones/efectos
+    User->>Jukebox: 3. Escucha aisladamente las canciones y explora los sprites de cada nivel
+    User->>Studio: 4. Reemplaza sprites por imágenes HD (.PNG/.BMP), asigna .MP3/.WAV y edita niveles
+    Studio->>Codegen: 5. Modifica automáticamente el archivo .c e inyecta todos los módulos nuevos
+    Codegen-->>User: 6. Compila y lanza Juego_Remaster_x64.exe autónomo con 1 clic
 ```
 
 ---
 
 ## Documentación del Plan de Implementación
 
-Consulta el diseño detallado de cada módulo, la estructura de archivos y las 5 fases de desarrollo en **[`PLAN_IMPLEMENTACION.md`](PLAN_IMPLEMENTACION.md)**.
+Consulta el diseño detallado de cada módulo, la arquitectura de la Rockola Aislada y de la Galería Completa de Gráficos, la estructura de archivos y las 5 fases de desarrollo en **[`PLAN_IMPLEMENTACION.md`](PLAN_IMPLEMENTACION.md)**.
