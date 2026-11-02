@@ -135,6 +135,19 @@ Permite cambiar vidas, armas, velocidades, gravedad o trucos mediante controles 
 3. **Visor Sincronizado `.ASM` <-> `.C` (Radiografía Opcional)**:
    - Muestra lado a lado el ensamblador y el código C generado con casillas para activar/desactivar instrucciones específicas con un clic.
 
+### Módulo 5: Creador de Juegos Nuevos desde Cero (`🚀 Motor Gráfico 2D/2.5D & Plantillas`)
+Convierte a `NesGameStudio` en un **"Mini-Unity" especializado en juegos 2D / 2.5D Retro y HD**, capaz de generar juegos completamente nuevos en C nativo sin depender de una ROM base:
+
+1. **Plantillas de Género en C Limpio (Sin código 6502 heredado)**:
+   - **Acción / Run & Gun** (*estilo Contra / Metal Slug / Mega Man*): Física de salto, disparo en 8 direcciones, armas intercambiables, plataformas atravesables y jefes.
+   - **Plataformas Clásico** (*estilo Super Mario / Celeste*): Gravedad e inercia configurables, bloques interactivos, coleccionables y enemigos patrulleros.
+   - **Aventura Top-Down** (*estilo Zelda*): Exploración por habitaciones/mundo abierto, combate cuerpo a cuerpo/proyectiles, inventario, llaves y diálogos.
+   - **Shoot 'em Up (Naves)** (*estilo Gradius*): Scroll automático horizontal o vertical, oleadas de enemigos, *power-ups* y patrones de balas.
+2. **Biblioteca Global de Recursos y "Mashup"**:
+   - Todo gráfico, sprite, paleta o sonido que hayas abierto desde cualquier juego en `NesGameStudio` se puede guardar en tu **Biblioteca Global de Activos** para reutilizarlo o combinarlo en tu propio juego nuevo, junto con tus propios archivos `.PNG`, `.BMP`, `.MP3` y `.WAV`.
+3. **Exportación a Código C Limpio y Ejecutable `.EXE` Autónomo**:
+   - Genera un único proyecto `.c` limpio con el motor gráfico multicapa (*Parallax* + *Alpha Blending* de 32 bits), motor de audio híbrido (`APU` + `.MP3`/`.WAV`) y soporte de mandos USB/Bluetooth, compilándolo directamente a un `.exe` independiente de menos de `2 MB` sin requerir runtimes pesados.
+
 ---
 
 ## 4. Estructura del Repositorio (`NesGameStudio`)
