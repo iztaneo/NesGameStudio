@@ -6,6 +6,15 @@ Su propósito es permitir **visualizar todos los gráficos del juego, reproducir
 
 ---
 
+## Arquitectura de Lenguaje Base: **Híbrida (Editor en Rust + Juegos Generados en C)**
+
+| Componente | Lenguaje Base | Por qué se eligió |
+| :--- | :--- | :--- |
+| **IDE / Estudio Visual (`NesGameStudio`)** | **Rust** (`eframe`/`egui`, `cpal`, `image`, `serde`) | Reutiliza la PPU/APU de `NesEmuRust` para la Vista Previa a 60 FPS y la Rockola Aislada, procesa código `.c`/`.asm` masivo sin errores de memoria y ofrece una GUI rápida y moderna. |
+| **Motor de los Juegos Exportados (`Target Engine`)** | **C Puro (`C99/C11`)** (`Win32` + `GDI` + `WinMM`) | Compila en **~1 segundo** con `cl.exe /O2` (`MSVC`), `gcc` o `clang`, generando ejecutables nativos `.exe` independientes y ultraligeros sin requerir librerías externas. |
+
+---
+
 ## Arquitectura General de `NesGameStudio`
 
 ```mermaid
