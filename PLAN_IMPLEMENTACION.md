@@ -340,7 +340,83 @@ flowchart TD
 
 ---
 
-## 4. Estructura del Repositorio (`NesGameStudio`)
+## 4. Especificación Arquitectónica: `NGS Hybrid Renderer` (Motor Gráfico 2D HD / 2.5D / Hybrid 2D-3D)
+
+- **Componente**: `NGS Hybrid Renderer`
+- **Lenguajes Principales**: `C11` (runtime exportado) + `Rust` (`egui`, editor visual)
+- **Integración**: `NGS Engine` + `NesEmuRust Compatibility Layer` (`ngs_nes_adapter.c`)
+
+### 4.1. Objetivo General y Principios Arquitectónicos
+Desarrollar un motor gráfico híbrido, acelerado por GPU, que permita crear videojuegos 2D modernos y combinar sprites *pixel art* con escenarios tridimensionales (estética **HD-2D**), iluminación dinámica, efectos cinematográficos y renderizado de alta resolución, tanto para juegos creados desde cero como para juegos retro importados desde `NesEmuRust`.
+
+```mermaid
+flowchart TD
+    subgraph L1["1. Game Logic Layer (Independiente de GPU/OS)"]
+        ENT["Entidades, Componentes, Física y Colisiones"]
+        AI_SCR["IA, Eventos, NGScript (.ngscript -> C11) y Estado NES (6502)"]
+    end
+
+    subgraph L2["2. Render Abstraction Layer (ngs_renderer_api.h)"]
+        CAM_SYS["NGS Camera System (2D Ortográfica, Isométrica, 3D Perspectiva, Cinematográfica)"]
+        MAT_SYS["NGS Materials & Shaders (.ngmat / .ngshader: Unlit, Lit, Normal Mapped, 3D Lit)"]
+        LGT_SYS["NGS Lighting System (Direccional, Puntual, Foco, Sombras Dinámicas, Día/Noche)"]
+        POST_SYS["Post-Processing (Bloom, Depth of Field, Vignette, Color Grading, CRT)"]
+    end
+
+    subgraph L3["3. Platform Graphics Backend"]
+        SDL3_GPU["ngs_gpu_sdl3.c (Backend Principal Acelerado por GPU: Windows, Linux, macOS, Steam Deck)"]
+        WIN32_GDI["ngs_platform_win32.c (Fallback Clásico Software / GDI Ultraligero)"]
+        CONSOLE_SDK["Backends Validados por SDK Oficial (Xbox Series X|S, PlayStation 5, Switch, WebAssembly)"]
+    end
+
+    L1 --> L2
+    L2 --> L3
+```
+
+- **Separación estricta entre lógica y representación**: La lógica del videojuego nunca depende directamente de DirectX, Vulkan, Metal, Win32 ni de un SDK de consola.
+- **Backend Gráfico (`ngs_renderer_api.h`)**: Se adopta **SDL3 GPU** como primera implementación acelerada por hardware, manteniendo nuestra propia interfaz abstracta (`ngs_renderer_api.h`) para cambiar o agregar backends nativos validados con el SDK oficial de cada consola cerrada.
+
+---
+
+### 4.2. Los 3 Modos de Renderizado (`Classic 2D`, `Enhanced 2D`, `Hybrid 2D/3D`)
+
+| Modo | Enfoque Visual | Características Clave | Objetivo |
+| :--- | :--- | :--- | :--- |
+| **Modo A: Classic 2D** | Tradicional con sprites y tilemaps | Pixel art sin interpolación, resoluciones retro, escalado entero, *sprite batching*, paletas originales y compatibilidad exacta con juegos reconstruidos. | Preservar la apariencia fiel de 8 bits cuando el usuario lo desee. |
+| **Modo B: Enhanced 2D** | 2D moderno acelerado por GPU | Sprites HD y texturas RGBA, capas *parallax* multicapa, transparencias, iluminación 2D, **Normal Maps para sprites**, partículas, sombras, shaders y Widescreen `16:9` / `21:9`. | Remasterizar en 2D HD sin reconstruir toda la geometría del juego. |
+| **Modo C: Hybrid 2D/3D (HD-2D)** | Sprites 2D integrados en escenarios 3D | Modelos y escenarios 3D, sprites como *billboards* o planos orientados con *depth buffer*, cámara en perspectiva/ortográfica, materiales iluminados, sombras proyectadas, efectos volumétricos, *Depth of Field* y posprocesamiento cinematográfico. | Crear juegos y remasters visualmente comparables a los referentes modernos **HD-2D**. |
+
+---
+
+### 4.3. Subsistemas del `NGS Hybrid Renderer`
+
+1. **`NGS GPU Renderer` (`ngs_renderer_api.h`, `ngs_renderer_core.c`, `ngs_renderer_2d.c`, `ngs_renderer_3d.c`, `ngs_gpu_resources.c`)**:
+   - Administración de texturas, buffers, renderizado de sprites con *batching*, geometría 3D, ordenamiento de capas, *render targets*, *depth buffers* y shaders.
+2. **`NGS Lighting System` (`ngs_lighting.c`)**:
+   - Luces direccionales, puntuales y de foco (*spotlights*) con atenuación por distancia, *normal maps* para dar relieve a sprites 2D, sombras dinámicas, luz ambiental y ciclos día/noche (con extensión a iluminación volumétrica y reflejos).
+3. **`NGS Camera System` (`camera_editor.rs`)**:
+   - Modos unificados: **2D Ortográfica**, **Isométrica**, **3D en Perspectiva**, **Seguimiento suave** y **Cinematográfica**, con posición, rotación, zoom, FOV, profundidad y puntos de interés editables.
+4. **`NGS Materials & Shaders` (`ngs_materials.c`, `ngs_postprocess.c`)**:
+   - Materiales base: *Pixel Art Unlit*, *Sprite Lit*, *Sprite Normal Mapped*, *Transparent*, *Additive* y *Standard 3D Lit*.
+   - Posprocesamiento configurable: *Bloom*, *Vignette*, *Depth of Field*, *Color Grading*, *Distortion*, *Pixelation* y *CRT*.
+5. **`NGS Scene Composer` (`scene_editor.rs`, `material_editor.rs`, `lighting_editor.rs`)**:
+   - Editor visual de escenas híbridas integrado en `NesGameStudio` con manipuladores 3D/2D de posición, rotación y escala, inspector de materiales, luces, partículas y vista previa en tiempo real.
+   - Formatos estructurados: `.ngs.json` (proyecto), `.ngscene` (escenas), `.ngmat` (materiales) y `.ngshader` (efectos).
+
+---
+
+### 4.4. Integración con `NesEmuRust` (`retro/ngs_nes_adapter.c`)
+1. **Conservación de la lógica original**: Los juegos importados conservan su código 6502 recompilado a C, estados de CPU/memoria, interrupciones, sincronización y colisiones originales; el `NGS Hybrid Renderer` actúa como capa de presentación pura sin alterar el determinismo ni los tiempos del juego.
+2. **Asociación y reemplazo de recursos**:
+   - `Tile NES` → Textura HD o bloque 3D.
+   - `Sprite NES` → Sprite HD con *Normal Map* o *Billboard* 2.5D.
+   - `Fondo NES` → Escenario multicapa o escena 2.5D/3D.
+   - `Efecto original` → Sistema de partículas e iluminación dinámica.
+3. **Correspondencia con escenarios 3D**: Cuando una ROM no contenga información suficiente para inferir automáticamente un mundo 3D, el editor permite mapear manualmente las correspondencias de coordenadas, desplazamientos de cámara, habitaciones y eventos, manteniendo tres modos conmutables en tiempo real: **Original**, **Enhanced** y **Hybrid**.
+
+---
+
+## 5. Estructura del Repositorio (`NesGameStudio`)
 
 ```text
 NesGameStudio/
@@ -348,18 +424,37 @@ NesGameStudio/
 ├── README.md                   # Descripción general y arquitectura en Mermaid
 ├── PLAN_IMPLEMENTACION.md      # Este documento de diseño e implementación
 ├── templates/
-│   └── engine/                 # Cabeceras C modulares (~150 líneas c/u) listas para copiar/incluir
-│       ├── ngs_platform.h      # HAL Multiplataforma (Win32, SDL3/GDK Xbox, PS5, Switch, Web)
-│       ├── ngs_scroll_camera.h # Widescreen 16:9/21:9 + Scroll Horizontal, Vertical, Auto y 8-Way
-│       ├── ngs_collision.h     # Colisiones AABB Hitbox/Hurtbox, Tilemap Grid O(1) y Triggers
-│       ├── ngs_vfx_alpha.h     # Transparencia Alfa 0..255, Partículas, Estelas y Shaders 2D
-│       ├── ngs_lighting.h      # Iluminación Dinámica 2D y Sombras en Tiempo Real
-│       ├── ngs_ai_behaviors.h  # Comportamientos de IA y máquinas de estado para Jefes
-│       ├── ngs_rpg_dialogue.h  # Árboles de Diálogos, Banderas de Misión, Inventario y Tiendas RPG
-│       ├── ngs_cutscenes.h     # Director de Cinemáticas In-Engine ejecutadas en tiempo real
-│       ├── ngs_time_control.h  # Rebobinado en Vivo (Time Rewind) y Cámara Lenta (Bullet Time)
-│       ├── ngs_netplay.h       # Cooperativo Local 2-4P y Netplay Online P2P UDP
-│       └── ngs_overlay_ui.h    # Menú Overlay In-Game, Logros Desbloqueables y Speedrun Timer
+│   └── engine/                 # Motor modular en C11 exportable
+│       ├── render/
+│       │   ├── ngs_renderer_api.h    # Interfaz gráfica abstracta independiente del OS/GPU
+│       │   ├── ngs_renderer_core.c   # Inicialización, render targets, depth buffer y recursos GPU
+│       │   ├── ngs_renderer_2d.c     # Modos Classic 2D y Enhanced 2D (sprite batching, parallax)
+│       │   ├── ngs_renderer_3d.c     # Modo Hybrid 2D/3D (geometría 3D, billboards, perspectiva)
+│       │   ├── ngs_materials.c       # Materiales (Unlit, Lit, Normal Mapped, 3D Lit)
+│       │   ├── ngs_lighting.c        # Luces direccionales, puntuales, foco y sombras dinámicas
+│       │   └── ngs_postprocess.c     # Bloom, Depth of Field, Vignette, Color Grading, CRT
+│       ├── platform/
+│       │   ├── ngs_platform.h        # HAL de plataforma, audio y controles
+│       │   ├── ngs_gpu_sdl3.c        # Backend acelerado por GPU vía SDL3 GPU
+│       │   └── ngs_platform_win32.c  # Backend ligero Win32
+│       ├── retro/
+│       │   └── ngs_nes_adapter.c     # Puente de compatibilidad y reemplazo visual para NesEmuRust
+│       └── gameplay/
+│           ├── ngs_scroll_camera.h   # Cámaras 2D/3D y Scrolling Horizontal, Vertical, Auto y 8-Way
+│           ├── ngs_collision.h       # Colisiones AABB Hitbox/Hurtbox, Tilemap Grid O(1) y Triggers
+│           ├── ngs_ai_behaviors.h    # Comportamientos de IA y máquinas de estado para Jefes
+│           ├── ngs_rpg_dialogue.h    # Árboles de Diálogos, Misiones, Inventario y Tiendas RPG
+│           ├── ngs_cutscenes.h       # Director de Cinemáticas In-Engine en tiempo real
+│           ├── ngs_time_control.h    # Rebobinado en Vivo (Time Rewind) y Bullet Time
+│           ├── ngs_netplay.h         # Cooperativo Local 2-4P y Netplay Online P2P UDP
+│           └── ngs_overlay_ui.h      # Menú Overlay In-Game, Logros y Speedrun Timer
+├── assets/
+│   ├── textures/
+│   ├── models/
+│   ├── materials/              # Archivos .ngmat
+│   └── shaders/                # Archivos .ngshader
+├── scenes/
+│   └── demo_hybrid.ngscene     # Escenas serializadas .ngscene
 └── src/
     ├── main.rs                 # Ventana principal de NesGameStudio
     ├── project.rs              # Proyecto (.ngs.json), catálogo de pistas y carpeta assets/
@@ -370,6 +465,10 @@ NesGameStudio/
     ├── editors/
     │   ├── graphics.rs         # Módulo 1: Galería total de gráficos CHR, Sprites HD y Timeline
     │   ├── levels.rs           # Módulo 2: Editor de Mapas, Scrolling, Parallax, RPG y Cutscenes
+    │   ├── scene_editor.rs     # NGS Scene Composer (Escenas Híbridas 2D/3D y Billboards)
+    │   ├── material_editor.rs  # Inspector de Materiales (.ngmat) y Normal Maps
+    │   ├── lighting_editor.rs  # Editor de Luces 2D/3D, Sombras y Ciclos Día/Noche
+    │   ├── camera_editor.rs    # Editor de Cámaras Ortográficas, Isométricas y Perspectiva 3D
     │   ├── audio.rs            # Módulo 3: Rockola aislada, Generador Sfxr, Piano Roll y .MP3/.WAV
     │   └── ram_inspector.rs    # Módulo 4: Buscador de Variables RAM, Reglas y Visor .ASM <-> .C
     └── codegen/                # Empaquetador de scripts/*.h y compilador automático a .exe nativo
@@ -377,26 +476,51 @@ NesGameStudio/
 
 ---
 
-## 5. Fases de Implementación, Estimación de Tiempo y Consumo de Tokens
+## 6. Hoja de Ruta Unificada: Fases Base + Fases `NGS Hybrid Renderer` (`HD-01` a `HD-07`)
 
-Tomando como base el desarrollo de `NesEmuRust` (donde ya quedaron resueltos y probados el renderizador Win32 a 60 FPS, la síntesis APU de 5 canales con `waveOut` y el compilador `MSVC`), el desarrollo completo de `NesGameStudio` se divide en **5 Fases Modulares**:
+### 6.1. Fases del IDE Base, Motor de Juego y `NGScript`
 
 | Fase | Qué construimos | Tiempo Estimado | Consumo de Tokens Estimado | Por qué es rápido |
 | :--- | :--- | :---: | :---: | :--- |
 | **Fase 1: Base del IDE, Galería Gráfica y Rockola Aislada** | Ventana `egui`, lector de `.c`/`.asm`, visor de todos los sprites (`CHR`) y reproductor aislado de música/efectos (*Sound Test* + `.WAV`). | **~35 - 45 min** | 🟢 **Bajo (~40k - 60k)** | Reutilizamos directamente la PPU y APU que ya programamos en `NesEmuRust`. |
-| **Fase 2: Motor C (`templates/engine/*.h`) — Widescreen, Scroll, Colisiones y VFX** | Librerías C para cámara `16:9`, Scroll Horizontal/Vertical/8-Direcciones, *Parallax*, Colisiones (`AABB` + Mapa) e Iluminación 2D. | **~40 - 50 min** | 🟢 **Bajo-Medio (~60k - 80k)** | Son cabeceras `.h` independientes en C puro (~150 líneas cada una), muy rápidas de escribir y probar. |
-| **Fase 3: Lenguaje `NGScript` y Transpilador a C** | El traductor de `.ngscript` a `scripts/*.h` (IA de enemigos/jefes, estados, colisiones y creación de efectos/shaders propios sin tocar `main.c`). | **~40 - 50 min** | 🟡 **Medio (~70k - 90k)** | Un parser declarativo en Rust es muy compacto (~300 líneas) y genera código C limpio al instante. |
-| **Fase 4: Editor de Mapas, Diálogos RPG, Cinemáticas *In-Engine* y `Sfxr`** | Lienzo para pintar niveles/triggers, editor de diálogos RPG, línea de tiempo de escenas con el motor y generador de sonidos retro. | **~45 - 55 min** | 🟡 **Medio (~80k - 110k)** | Es la fase con más interfaz visual (`egui`), pero cada herramienta vive en su propia pestaña modular. |
-| **Fase 5: *Time Rewind*, Cooperativo 4P/Netplay, Logros y Compilación 1-Clic** | Rebobinado en vivo, *Bullet Time*, logros en pantalla, exportación multiplataforma y juego demo completo. | **~30 - 40 min** | 🟢 **Bajo (~40k - 60k)** | Conecta todos los módulos anteriores y empaqueta el `.exe` final con `cl.exe`. |
-| **TOTAL ESTIMADO** | **`NesGameStudio` Completo (5 Fases)** | **~3.5 horas** | **~290k - 400k tokens** | **Menos tokens de los que tomó depurar el emulador desde cero.** |
+| **Fase 2: Motor Gameplay C (`gameplay/*.h`) y Abstracción `HD-01`** | `ngs_renderer_api.h`, cámara `16:9`, Scroll Horizontal/Vertical/8-Way, Colisiones (`AABB` + Mapa) y separación respecto a Win32/GDI. | **~45 - 55 min** | 🟢 **Bajo-Medio (~65k - 85k)** | Cabeceras `.h`/`.c` independientes en C11 (~150 líneas cada una). |
+| **Fase 3: Lenguaje `NGScript`, Transpilador a C y Copiloto IA** | El traductor de `.ngscript` a `scripts/*.h` (IA, estados, colisiones, efectos propios) + conector IA (`src/ai_copilot.rs`). | **~45 - 55 min** | 🟡 **Medio (~70k - 90k)** | Parser declarativo compacto en Rust (~300 líneas). |
+| **Fase 4: Editor de Mapas, Diálogos RPG, Cinemáticas *In-Engine* y `Sfxr`** | Lienzo para pintar niveles/triggers, editor de diálogos RPG, línea de tiempo de escenas con el motor y generador de sonidos retro. | **~45 - 55 min** | 🟡 **Medio (~80k - 110k)** | Cada herramienta visual vive en su propia pestaña modular de `egui`. |
+| **Fase 5: *Time Rewind*, Cooperativo 4P/Netplay, Logros y Compilación** | Rebobinado en vivo, *Bullet Time*, logros en pantalla y empaquetado `.exe`. | **~30 - 40 min** | 🟢 **Bajo (~40k - 60k)** | Conecta los módulos de gameplay y empaqueta el ejecutable final. |
+
+### 6.2. Fases del Motor Gráfico `NGS Hybrid Renderer` (`HD-01` a `HD-07`)
+
+| Fase HD | Prioridad | Actividades Principales | Criterio de Aceptación |
+| :--- | :---: | :--- | :--- |
+| **Fase HD-01: Abstracción Gráfica y Renderizador GPU** | 🔴 Crítica | Definir `ngs_renderer_api.h`, separar GDI de la lógica, integrar backend `SDL3 GPU`, *sprite batching* y conservar modo clásico. | Escena de prueba a 60 FPS sin dependencias directas de Win32 en la lógica del juego. |
+| **Fase HD-02: Enhanced 2D** | 🟠 Alta | Texturas HD RGBA, transparencias, *parallax*, iluminación 2D, *normal maps* para sprites, materiales y partículas. | Escena 2D HD multicapa con iluminación dinámica y *normal maps* editable desde `NesGameStudio`. |
+| **Fase HD-03: Renderizado Híbrido 2D/3D (HD-2D)** | 🟠 Alta | Geometría 3D, cámaras en perspectiva, sprites como *billboards* con profundidad, *depth buffer*, materiales iluminados y sombras proyectadas. | Escena con personajes pixel art sobre geometría 3D, iluminación dinámica y sombras coherentes. |
+| **Fase HD-04: Editor Visual Híbrido (`NGS Scene Composer`)** | 🟠 Alta | Editor de escenas 3D (`scene_editor.rs`), manipuladores de transformación, inspector de materiales, luces, cámaras y serialización `.ngscene`. | Crear, guardar, reabrir y compilar una escena híbrida completa sin modificar código C a mano. |
+| **Fase HD-05: Integración Retro (`ngs_nes_adapter.c`)** | 🟠 Alta | Conectar renderizador con `NesEmuRust`, perfiles de reemplazo HD/3D, sincronizar cámaras y conmutar modos *Original / Enhanced / Hybrid*. | Recompilar una ROM de prueba legalmente distribuible y presentar su versión híbrida manteniendo lógica idéntica. |
+| **Fase HD-06: Efectos Cinematográficos y Optimización** | 🟡 Media | *Bloom*, *Depth of Field*, *Color Grading*, efectos atmosféricos, reducción de *draw calls*, perfiles gráficos y *profiling* CPU/GPU. | Calidad visual configurable a 1080p / 60 FPS sin fugas de memoria GPU entre escenas. |
+| **Fase HD-07: Backends Multiplataforma** | 🔵 Posterior | Consolidar `ngs_renderer_api.h`, adaptar pipeline de shaders y validar en Windows, Linux, macOS, Steam Deck, WebAssembly y SDKs de consolas. | Compilar y ejecutar el mismo proyecto en al menos dos plataformas de escritorio y dejar listo el puente para consolas. |
 
 ---
 
-## 6. Estrategia de Optimización para Ahorrar hasta un 65% de Tokens
+## 7. Requisitos de Rendimiento, Mitigación de Riesgos y Ahorro de Tokens
 
-1. **Archivos Pequeños y Modulares (Máximo ~200 líneas por archivo)**:
-   - En lugar de concatenar código C dentro de un archivo Rust monolítico gigante, cada subsistema del motor vive en su propio archivo `.h` dentro de `templates/engine/` (`ngs_collision.h`, `ngs_lighting.h`, `ngs_cutscenes.h`, etc.). Así, al programar o ajustar un módulo solo se lee y edita un archivo de ~150 líneas.
-2. **Trabajar directamente sobre el Workspace de `NesGameStudio`**:
-   - Abrir la carpeta `c:\Users\Cesar\Documents\AI Proyectos\NesGameStudio` permite tomar este [`PLAN_IMPLEMENTACION.md`](PLAN_IMPLEMENTACION.md) como punto de partida inmediato en cada sesión sin re-explicar el contexto.
-3. **Compactar o Iniciar Sesión Limpia al Concluir cada Fase**:
-   - Hacer `git commit` + `git push` al terminar cada una de las 5 fases y usar `/compact` (o abrir una conversación nueva para la siguiente fase) evita reenviar el historial de fases anteriores en cada mensaje.
+### 7.1. Presupuestos de Calidad y Rendimiento
+- **Objetivo base**: `60 FPS` estables a `1080p` en el equipo de referencia, desacoplando la frecuencia de actualización lógica (`60 Hz` deterministas) de la frecuencia de refresco del monitor.
+- **Gestión GPU**: Reducción de *draw calls* por *batching*, carga diferida de recursos, perfiles de calidad escalables (*Low / Medium / High / Ultra HD-2D*) y telemetría de tiempos de CPU y GPU por frame.
+
+### 7.2. Matriz de Riesgos Técnicos y Mitigación
+
+| Riesgo Técnico | Estrategia de Mitigación |
+| :--- | :--- |
+| **Acoplamiento con Win32/GDI** | Introducir `ngs_renderer_api.h` desde el inicio (`Fase HD-01`) antes del nuevo renderizador. |
+| **Incompatibilidad entre shaders** | Definir un pipeline portable (`.ngshader`) que genere variantes para los backends objetivo. |
+| **Diferencias de sincronización NES** | Separar estrictamente la simulación lógica 6502/C de la capa de presentación GPU. |
+| **Reconstrucción incorrecta de escenarios retro en 3D** | Permitir mapeo manual explícito en el editor y registrar niveles de confianza por escena. |
+| **Alto costo de efectos cinematográficos** | Implementar perfiles de calidad configurables y presupuestos GPU por plataforma. |
+| **Dependencia de SDK propietarios de consolas** | Mantener backends independientes detrás de `ngs_renderer_api.h`. |
+| **Regresiones del código recompilado** | Ejecutar pruebas comparativas deterministas entre modo *Original* y modo *Hybrid*. |
+
+### 7.3. Estrategia para Ahorrar hasta un 65% de Tokens Durante el Desarrollo
+1. **Archivos Pequeños y Modulares (Máximo ~200 líneas por archivo)**: Cada subsistema de `templates/engine/render/` y `templates/engine/gameplay/` vive en su propio archivo `.h`/`.c` independiente.
+2. **Trabajar directamente sobre el Workspace de `NesGameStudio`**: Tomar este [`PLAN_IMPLEMENTACION.md`](PLAN_IMPLEMENTACION.md) como especificación maestra en cada sesión.
+3. **Compactar o Iniciar Sesión Limpia al Concluir cada Fase**: Hacer `git commit` + `git push` al terminar cada fase y usar `/compact` para no arrastrar historial innecesario.
