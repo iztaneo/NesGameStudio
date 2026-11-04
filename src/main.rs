@@ -6,14 +6,13 @@ mod runtime;
 #[cfg(target_os = "windows")]
 mod win32_show;
 
-const WINDOW_TITLE: &str = "NesGameStudio — IDE Visual de Remasterización HD, Audio & Creación 2D/2.5D";
-
 use eframe::egui::{self, Color32};
 use editors::audio::AudioEditorState;
 use editors::graphics::GraphicsEditorState;
 use project::NgsProject;
 use runtime::jukebox_apu::JukeboxEngine;
-use std::path::Path;
+
+const WINDOW_TITLE: &str = "NesGameStudio — IDE Visual de Remasterización HD, Audio & Creación 2D/2.5D";
 
 #[derive(PartialEq, Eq, Clone, Copy)]
 enum ActiveTab {
@@ -29,118 +28,209 @@ struct NesGameStudioApp {
     audio_editor: AudioEditorState,
     jukebox: JukeboxEngine,
     subroutine_filter: String,
+    show_about_modal: bool,
     status_bar_msg: String,
 }
 
 impl Default for NesGameStudioApp {
     fn default() -> Self {
-        let mut app = Self {
+        // Inicia limpio, sin cargar ningún archivo automáticamente
+        Self {
             project: NgsProject::default(),
             active_tab: ActiveTab::GraphicsGallery,
             graphics_editor: GraphicsEditorState::default(),
             audio_editor: AudioEditorState::default(),
             jukebox: JukeboxEngine::new(),
             subroutine_filter: "TODAS".to_string(),
-            status_bar_msg: "Listo. Abre un archivo .C exportado por NesEmuRust para explorar sus gráficos y música.".to_string(),
-        };
-
-        // Si existe un archivo .c en ../NesEmuRust/exports/, cargarlo automáticamente al iniciar
-        let default_contra = Path::new(r"c:\Users\Cesar\Documents\AI Proyectos\NesEmuRust\exports\Contra _USA_.c");
-        if default_contra.exists() {
-            if let Ok(msg) = parser::load_c_and_asm_into_project(default_contra, &mut app.project) {
-                app.status_bar_msg = format!("Auto-cargado: {}", msg);
-            }
+            show_about_modal: false,
+            status_bar_msg: "Listo. Usa el menú Archivo -> Abrir Código .C / .ASM... para comenzar.".to_string(),
         }
-        app
     }
 }
 
 impl eframe::App for NesGameStudioApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // Redibujo continuo si la rockola está reproduciendo para animar el osciloscopio
-        if let Ok(st) = self.jukebox.state.lock() {
-            if st.playing {
-                ctx.request_repaint();
-            }
+        // Si la rockola está activa, alimentar el flujo de audio real desde la CPU 6502 + APU del juego cargado
+        if self.jukebox.playing && self.project.loaded {
+            self.jukebox.step_real_audio_frame(&mut self.project);
+            ctx.request_repaint();
         }
 
-        // BARRA SUPERIOR DE HERRAMIENTAS
-        egui::TopBottomPanel::top("top_toolbar").show(ctx, |ui| {
-            ui.horizontal_wrapped(|ui| {
-                ui.heading("🎮 NesGameStudio v0.1 (Fase 1)");
-                ui.separator();
-
-                if ui.button("📂 Abrir Juego (.C / .ASM)").clicked() {
-                    if let Some(path) = rfd::FileDialog::new()
-                        .add_filter("Código C de NesEmuRust", &["c"])
-                        .pick_file()
-                    {
-                        match parser::load_c_and_asm_into_project(&path, &mut self.project) {
-                            Ok(msg) => {
-                                if let Ok(mut st) = self.jukebox.state.lock() {
-                                    st.rom_seed.clear();
+        // BARRA DE MENÚ ESTÁNDAR DE WINDOWS (Archivo | Edición | Vista | Compilar | Ayuda)
+        egui::TopBottomPanel::top("main_menu_bar").show(ctx, |ui| {
+            egui::menu::bar(ui, |ui| {
+                // 1. MENÚ ARCHIVO
+                ui.menu_button("Archivo", |ui| {
+                    if ui.button("📄 Nuevo Proyecto en Blanco").clicked() {
+                        self.jukebox.playing = false;
+                        self.project.clear_to_new_project();
+                        self.graphics_editor.invalidate_texture();
+                        self.status_bar_msg = "Nuevo proyecto en blanco inicializado.".to_string();
+                        ui.close_menu();
+                    }
+                    ui.separator();
+                    if ui.button("📂 Abrir Código .C / .ASM (de NesEmuRust)...").clicked() {
+                        ui.close_menu();
+                        if let Some(path) = rfd::FileDialog::new()
+                            .add_filter("Código C de NesEmuRust", &["c"])
+                            .pick_file()
+                        {
+                            self.jukebox.playing = false;
+                            match parser::load_c_and_asm_into_project(&path, &mut self.project) {
+                                Ok(msg) => {
+                                    self.graphics_editor.invalidate_texture();
+                                    self.status_bar_msg = msg;
                                 }
-                                self.status_bar_msg = msg;
+                                Err(e) => self.status_bar_msg = e,
                             }
-                            Err(e) => self.status_bar_msg = e,
                         }
                     }
-                }
+                    if ui.button("🎮 Abrir ROM .NES Directamente...").clicked() {
+                        ui.close_menu();
+                        if let Some(path) = rfd::FileDialog::new()
+                            .add_filter("ROM de NES", &["nes"])
+                            .pick_file()
+                        {
+                            self.jukebox.playing = false;
+                            match parser::load_nes_rom_into_project(&path, &mut self.project) {
+                                Ok(msg) => {
+                                    self.graphics_editor.invalidate_texture();
+                                    self.status_bar_msg = msg;
+                                }
+                                Err(e) => self.status_bar_msg = e,
+                            }
+                        }
+                    }
+                    ui.separator();
+                    if ui.button("💾 Guardar Proyecto (.ngs.json)...").clicked() {
+                        ui.close_menu();
+                        if let Some(path) = rfd::FileDialog::new()
+                            .set_file_name(&format!("{}.ngs.json", self.project.game_title))
+                            .add_filter("Proyecto NesGameStudio", &["json"])
+                            .save_file()
+                        {
+                            match self.project.save_project_manifest(&path) {
+                                Ok(_) => self.status_bar_msg = format!("Proyecto guardado en {}", path.display()),
+                                Err(e) => self.status_bar_msg = e,
+                            }
+                        }
+                    }
+                    ui.separator();
+                    if ui.button("🚪 Salir").clicked() {
+                        std::process::exit(0);
+                    }
+                });
 
-                if ui.button("💾 Guardar Proyecto (.ngs.json)").clicked() {
-                    if let Some(path) = rfd::FileDialog::new()
-                        .set_file_name(&format!("{}.ngs.json", self.project.game_title))
-                        .add_filter("Proyecto NesGameStudio", &["json"])
-                        .save_file()
+                // 2. MENÚ EDICIÓN
+                ui.menu_button("Edición", |ui| {
+                    if ui.button("⏭ Avanzar Juego +60 Frames y Capturar Mapas de Bits").clicked() {
+                        ui.close_menu();
+                        if self.project.loaded {
+                            for _ in 0..60 {
+                                self.project.nes_live.step_frame();
+                                self.project.nes_live.bus.apu.audio_samples.clear();
+                            }
+                            let n = self.project.scenes.len() + 1;
+                            self.project
+                                .capture_current_live_scene(format!("Escena {}: Captura en Vivo", n));
+                            self.graphics_editor.invalidate_texture();
+                            self.status_bar_msg = "Nueva escena de mapas de bits capturada.".to_string();
+                        }
+                    }
+                    ui.separator();
+                    if ui.button("🧹 Limpiar Tiles Editados").clicked() {
+                        self.project.modified_tiles.clear();
+                        self.status_bar_msg = "Se limpiaron las ediciones de tiles.".to_string();
+                        ui.close_menu();
+                    }
+                    if ui.button("🧹 Limpiar Reemplazos de Audio (.MP3/.WAV)").clicked() {
+                        self.project.audio_replacements.clear();
+                        self.status_bar_msg = "Se limpiaron los reemplazos de audio.".to_string();
+                        ui.close_menu();
+                    }
+                });
+
+                // 3. MENÚ VISTA / MÓDULOS
+                ui.menu_button("Vista", |ui| {
+                    if ui
+                        .radio_value(
+                            &mut self.active_tab,
+                            ActiveTab::GraphicsGallery,
+                            "🎨 1. Galería de Mapas de Bits y Sprites HD",
+                        )
+                        .clicked()
                     {
-                        match self.project.save_project_manifest(&path) {
-                            Ok(_) => self.status_bar_msg = format!("Proyecto guardado en {}", path.display()),
+                        ui.close_menu();
+                    }
+                    if ui
+                        .radio_value(
+                            &mut self.active_tab,
+                            ActiveTab::AudioJukebox,
+                            "🎵 2. Rockola Aislada (Motor 6502 + APU Real)",
+                        )
+                        .clicked()
+                    {
+                        ui.close_menu();
+                    }
+                    if ui
+                        .radio_value(
+                            &mut self.active_tab,
+                            ActiveTab::SubroutinesInspector,
+                            "🔍 3. Radiografía de Subrutinas (.ASM <-> .C)",
+                        )
+                        .clicked()
+                    {
+                        ui.close_menu();
+                    }
+                });
+
+                // 4. MENÚ COMPILAR
+                ui.menu_button("Compilar", |ui| {
+                    ui.checkbox(
+                        &mut self.project.widescreen_16_9,
+                        "🖥 Activar Widescreen 16:9 Real (426x240)",
+                    );
+                    ui.separator();
+                    if ui.button("🔨 Generar Archivo .C Modificado").clicked() {
+                        ui.close_menu();
+                        match codegen::generate_modified_c_file(&self.project) {
+                            Ok(p) => self.status_bar_msg = format!("Código C generado: {}", p.display()),
                             Err(e) => self.status_bar_msg = e,
                         }
                     }
-                }
+                    if ui.button("🚀 Compilar y Ejecutar .EXE Nativo (x64)").clicked() {
+                        ui.close_menu();
+                        match codegen::compile_and_run_modified_c(&self.project, true) {
+                            Ok(msg) => self.status_bar_msg = msg,
+                            Err(e) => self.status_bar_msg = e,
+                        }
+                    }
+                });
+
+                // 5. MENÚ AYUDA
+                ui.menu_button("Ayuda", |ui| {
+                    if ui.button("ℹ Acerca de NesGameStudio").clicked() {
+                        self.show_about_modal = true;
+                        ui.close_menu();
+                    }
+                });
 
                 ui.separator();
-
-                if ui.button("🔨 Generar .C Modificado").clicked() {
-                    match codegen::generate_modified_c_file(&self.project) {
-                        Ok(p) => self.status_bar_msg = format!("Código C inyectado en: {}", p.display()),
-                        Err(e) => self.status_bar_msg = e,
-                    }
-                }
-
-                let play_btn = egui::Button::new(
-                    egui::RichText::new("🚀 Compilar y Jugar .EXE (x64)")
-                        .strong()
-                        .color(Color32::BLACK),
-                )
-                .fill(Color32::from_rgb(80, 230, 130));
-
-                if ui.add(play_btn).clicked() {
-                    match codegen::compile_and_run_modified_c(&self.project, true) {
-                        Ok(msg) => self.status_bar_msg = msg,
-                        Err(e) => self.status_bar_msg = e,
-                    }
-                }
-            });
-
-            ui.separator();
-            // PESTAÑAS DE MÓDULOS DE LA FASE 1
-            ui.horizontal(|ui| {
+                // Selector rápido de la vista actual en la misma barra de menú
                 ui.selectable_value(
                     &mut self.active_tab,
                     ActiveTab::GraphicsGallery,
-                    "🎨 1. Galería Total de Gráficos & Sprites HD",
+                    "🎨 Mapas de Bits",
                 );
                 ui.selectable_value(
                     &mut self.active_tab,
                     ActiveTab::AudioJukebox,
-                    "🎵 2. Rockola Aislada (Sound Test) & .MP3/.WAV",
+                    "🎵 Rockola Real",
                 );
                 ui.selectable_value(
                     &mut self.active_tab,
                     ActiveTab::SubroutinesInspector,
-                    "🔍 3. Radiografía de Subrutinas (.ASM <-> .C)",
+                    "🔍 Subrutinas",
                 );
             });
         });
@@ -149,11 +239,11 @@ impl eframe::App for NesGameStudioApp {
         egui::TopBottomPanel::bottom("bottom_status").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 ui.label(format!(
-                    "Juego: {} | Mapper: {} | PRG: {} KB | Tiles: {} | Subrutinas: {}",
+                    "Proyecto: {} | Mapper: {} | PRG: {} KB | Escenas CHR: {} | Subrutinas: {}",
                     self.project.game_title,
                     self.project.mapper_id,
                     self.project.prg_rom.len() / 1024,
-                    self.project.total_tiles(),
+                    self.project.scenes.len(),
                     self.project.subroutines.len()
                 ));
                 ui.separator();
@@ -161,13 +251,27 @@ impl eframe::App for NesGameStudioApp {
             });
         });
 
-        // PANEL CENTRAL SEGÚN PESTAÑA ACTIVA
+        if self.show_about_modal {
+            egui::Window::new("Acerca de NesGameStudio")
+                .collapsible(false)
+                .resizable(false)
+                .show(ctx, |ui| {
+                    ui.heading("NesGameStudio — Fase 1");
+                    ui.label("IDE Visual de Modding, Remasterización HD/2.5D y Creación de Juegos en C.");
+                    ui.label("Integra el núcleo 6502 + PPU + APU de NesEmuRust para descomprimir gráficos CHR-RAM y reproducir música real.");
+                    if ui.button("Cerrar").clicked() {
+                        self.show_about_modal = false;
+                    }
+                });
+        }
+
+        // PANEL CENTRAL
         egui::CentralPanel::default().show(ctx, |ui| match self.active_tab {
             ActiveTab::GraphicsGallery => {
-                self.graphics_editor.ui(ui, &mut self.project);
+                self.graphics_editor.ui(ctx, ui, &mut self.project);
             }
             ActiveTab::AudioJukebox => {
-                self.audio_editor.ui(ui, &mut self.project, &self.jukebox);
+                self.audio_editor.ui(ui, &mut self.project, &mut self.jukebox);
             }
             ActiveTab::SubroutinesInspector => {
                 self.render_subroutines_tab(ui);
@@ -178,6 +282,14 @@ impl eframe::App for NesGameStudioApp {
 
 impl NesGameStudioApp {
     fn render_subroutines_tab(&mut self, ui: &mut egui::Ui) {
+        if !self.project.loaded {
+            ui.vertical_centered(|ui| {
+                ui.add_space(80.0);
+                ui.heading("Ningún proyecto abierto");
+                ui.label("Usa el menú Archivo -> Abrir Código .C / .ASM... para inspeccionar subrutinas.");
+            });
+            return;
+        }
         ui.heading("🔍 Explorador de Subrutinas y Vectores (.ASM <-> .C)");
         ui.horizontal(|ui| {
             ui.label(format!(
@@ -185,7 +297,7 @@ impl NesGameStudioApp {
                 self.project.vec_nmi, self.project.vec_reset, self.project.vec_irq
             ));
             ui.separator();
-            ui.label("Filtrar por Categoría:");
+            ui.label("Filtrar:");
             for cat in ["TODAS", "[AUDIO / APU]", "[VIDEO / PPU]", "[JOYPAD / INPUT]", "[GAME LOGIC]"] {
                 if ui.selectable_label(self.subroutine_filter == cat, cat).clicked() {
                     self.subroutine_filter = cat.to_string();
@@ -220,7 +332,7 @@ fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title(WINDOW_TITLE)
-            .with_inner_size([1180.0, 760.0])
+            .with_inner_size([1220.0, 760.0])
             .with_visible(true)
             .with_active(true),
         ..Default::default()

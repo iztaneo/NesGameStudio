@@ -28,21 +28,21 @@ pub fn generate_modified_c_file(project: &NgsProject) -> Result<PathBuf, String>
     ));
 
     patch_block.push_str("static int g_ngs_patches_initialized = 0;\n");
-    patch_block.push_str("static void ngs_apply_studio_patches_once(void) {\n");
-    patch_block.push_str("    if (g_ngs_patches_initialized) return;\n");
-    patch_block.push_str("    g_ngs_patches_initialized = 1;\n");
+    patch_block.push_str("static void ngs_apply_studio_patches_frame(void) {\n");
 
-    // 1. Inyectar tiles 8x8 editados en CHR_MEM[] o PRG_ROM[]
+    // 1. Mantener aplicados los tiles 8x8 editados en CHR_MEM[] (funciona tanto en CHR-ROM como tras descompresión CHR-RAM)
     for (&tile_idx, bytes) in &project.modified_tiles {
-        let base_offset = tile_idx * 16;
-        let target_arr = if project.is_chr_ram { "PRG_ROM" } else { "CHR_MEM" };
+        let base_offset = (tile_idx % 512) * 16;
         for (i, &b) in bytes.iter().enumerate() {
             patch_block.push_str(&format!(
-                "    {}[{} + {}] = 0x{:02X};\n",
-                target_arr, base_offset, i, b
+                "    CHR_MEM[{} + {}] = 0x{:02X};\n",
+                base_offset, i, b
             ));
         }
     }
+
+    patch_block.push_str("    if (g_ngs_patches_initialized) return;\n");
+    patch_block.push_str("    g_ngs_patches_initialized = 1;\n");
 
     // 2. Registrar reemplazos de Sprites HD vinculados (para Enhanced 2D / Hybrid)
     for (&tile_idx, hd) in &project.hd_sprites {
@@ -85,7 +85,7 @@ pub fn generate_modified_c_file(project: &NgsProject) -> Result<PathBuf, String>
         modified_c.insert_str(pos, &patch_block);
         modified_c = modified_c.replacen(
             "void nes_step_one_frame_60hz(void) {",
-            "void nes_step_one_frame_60hz(void) {\n    ngs_apply_studio_patches_once();",
+            "void nes_step_one_frame_60hz(void) {\n    ngs_apply_studio_patches_frame();",
             1,
         );
     } else {

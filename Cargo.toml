@@ -5,6 +5,7 @@ edition = "2021"
 description = "NesGameStudio - Visual IDE, HD/2.5D Hybrid Engine & Modding Studio for C/NES Games"
 
 [dependencies]
+nes_emu_rust = { path = "../NesEmuRust" }
 eframe = "0.29"
 egui = "0.29"
 cpal = "0.15"

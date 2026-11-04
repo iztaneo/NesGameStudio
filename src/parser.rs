@@ -1,4 +1,5 @@
 use crate::project::{NgsProject, SubroutineInfo};
+use nes_emu_rust::controller::JoypadButtons;
 use std::fs;
 use std::path::Path;
 
@@ -12,52 +13,210 @@ pub fn load_c_and_asm_into_project(c_path: &Path, project: &mut NgsProject) -> R
         .unwrap_or("Juego_NES")
         .to_string();
 
+    project.loaded = true;
     project.game_title = stem;
     project.c_file_path = Some(c_path.to_path_buf());
     project.raw_c_source = raw_c.clone();
     project.modified_tiles.clear();
 
-    // Extraer Mapper y Vectores si están definidos en el .c
     project.mapper_id = parse_define_u16(&raw_c, "#define MAPPER_ID").unwrap_or(0) as u8;
+    project.mirroring_mode = parse_define_u16(&raw_c, "#define MIRRORING_MODE").unwrap_or(0) as u8;
     project.vec_nmi = parse_define_u16(&raw_c, "#define VEC_NMI").unwrap_or(0x8000);
     project.vec_reset = parse_define_u16(&raw_c, "#define VEC_RESET").unwrap_or(0x8000);
     project.vec_irq = parse_define_u16(&raw_c, "#define VEC_IRQ").unwrap_or(0x8000);
 
-    // Extraer arreglos PRG_ROM[] y CHR_MEM[]
     project.prg_rom = extract_c_byte_array(&raw_c, "PRG_ROM[");
     project.chr_mem = extract_c_byte_array(&raw_c, "CHR_MEM[");
 
-    // Determinar si es CHR-ROM (datos reales en CHR_MEM) o CHR-RAM (CHR_MEM vacío/ceros como Contra)
-    let non_zero_chr = project.chr_mem.iter().filter(|&&b| b != 0).count();
-    if non_zero_chr > 64 {
-        project.is_chr_ram = false;
-        project.decoded_tiles_source = project.chr_mem.clone();
-    } else {
-        project.is_chr_ram = true;
-        // Para juegos CHR-RAM (ej. Contra, Zelda, Mega Man), extraemos los bancos de patrones desde PRG_ROM
-        project.decoded_tiles_source = extract_chr_ram_patterns_from_prg(&project.prg_rom);
+    if project.prg_rom.is_empty() {
+        return Err("El archivo .C seleccionado no contiene un arreglo PRG_ROM[] válido.".to_string());
     }
 
-    // Buscar automáticamente el archivo .asm compañero en la misma carpeta
+    let non_zero_chr = project.chr_mem.iter().filter(|&&b| b != 0).count();
+    project.is_chr_ram = non_zero_chr <= 64;
+
+    // Reconstruir imagen iNES en memoria desde PRG_ROM[] y CHR_MEM[] del archivo .C
+    let ines_bytes = build_ines_from_extracted(
+        &project.prg_rom,
+        &project.chr_mem,
+        project.mapper_id,
+        project.mirroring_mode,
+        project.is_chr_ram,
+    );
+
+    // Ejecutar la CPU 6502 + PPU + APU real para descomprimir los mapas de bits reales y capturar la música real
+    populate_real_scenes_and_audio_from_ines(&ines_bytes, project)?;
+
+    // Cargar subrutinas desde el .asm compañero o desde el propio .c
     let candidate_asm = c_path.with_extension("asm");
     project.subroutines.clear();
     if candidate_asm.exists() {
         project.asm_file_path = Some(candidate_asm.clone());
         let _ = load_asm_subroutines(&candidate_asm, project);
     } else {
-        // Si no hay .asm externo, escanear etiquetas sub_XXXX directamente del .c
         extract_subroutines_from_c(&raw_c, project);
     }
 
     Ok(format!(
-        "Cargado '{}': PRG={} KB, {} ({} tiles), {} subrutinas detectadas (Mapper {})",
+        "Cargado '{}': PRG={} KB, {} ({} escenas reales descomprimidas), {} subrutinas (Mapper {})",
         project.game_title,
         project.prg_rom.len() / 1024,
-        if project.is_chr_ram { "CHR-RAM (Escaneado de PRG)" } else { "CHR-ROM" },
-        project.total_tiles(),
+        if project.is_chr_ram { "CHR-RAM Descomprimida por 6502" } else { "CHR-ROM" },
+        project.scenes.len(),
         project.subroutines.len(),
         project.mapper_id
     ))
+}
+
+pub fn load_nes_rom_into_project(nes_path: &Path, project: &mut NgsProject) -> Result<String, String> {
+    let ines_bytes = fs::read(nes_path)
+        .map_err(|e| format!("Error leyendo ROM '{}': {}", nes_path.display(), e))?;
+    if ines_bytes.len() < 16 || &ines_bytes[0..4] != b"NES\x1A" {
+        return Err("El archivo seleccionado no tiene cabecera iNES válida.".to_string());
+    }
+    let stem = nes_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("Juego_NES")
+        .to_string();
+
+    let prg_banks = ines_bytes[4] as usize;
+    let chr_banks = ines_bytes[5] as usize;
+    let flags6 = ines_bytes[6];
+    let flags7 = ines_bytes[7];
+    let mapper_id = (flags7 & 0xF0) | (flags6 >> 4);
+    let prg_size = prg_banks * 16384;
+    let chr_size = chr_banks * 8192;
+
+    project.loaded = true;
+    project.game_title = stem;
+    project.mapper_id = mapper_id;
+    project.mirroring_mode = flags6 & 1;
+    project.is_chr_ram = chr_banks == 0;
+    if 16 + prg_size <= ines_bytes.len() {
+        project.prg_rom = ines_bytes[16..16 + prg_size].to_vec();
+    }
+    if chr_size > 0 && 16 + prg_size + chr_size <= ines_bytes.len() {
+        project.chr_mem = ines_bytes[16 + prg_size..16 + prg_size + chr_size].to_vec();
+    } else {
+        project.chr_mem = vec![0u8; 8192];
+    }
+
+    populate_real_scenes_and_audio_from_ines(&ines_bytes, project)?;
+
+    // Generar también el código C y ASM base en memoria usando el desensamblador de nes_emu_rust
+    project.raw_c_source =
+        nes_emu_rust::cpu::disassembler::export_full_c_source(&project.nes_live.bus, &project.game_title);
+    extract_subroutines_from_c(&project.raw_c_source, project);
+
+    Ok(format!(
+        "ROM '{}' cargada: PRG={} KB, {} escenas con mapas de bits y música reales capturadas",
+        project.game_title,
+        project.prg_rom.len() / 1024,
+        project.scenes.len()
+    ))
+}
+
+fn build_ines_from_extracted(
+    prg: &[u8],
+    chr: &[u8],
+    mapper_id: u8,
+    mirroring_mode: u8,
+    is_chr_ram: bool,
+) -> Vec<u8> {
+    let prg_banks = (prg.len() / 16384).max(1) as u8;
+    let chr_banks = if is_chr_ram { 0u8 } else { (chr.len() / 8192).max(1) as u8 };
+    let flags6 = ((mapper_id & 0x0F) << 4) | (mirroring_mode & 0x01);
+    let flags7 = mapper_id & 0xF0;
+
+    let mut ines = Vec::with_capacity(16 + prg.len() + chr.len());
+    ines.extend_from_slice(b"NES\x1A");
+    ines.push(prg_banks);
+    ines.push(chr_banks);
+    ines.push(flags6);
+    ines.push(flags7);
+    ines.extend_from_slice(&[0u8; 8]);
+    ines.extend_from_slice(prg);
+    if !is_chr_ram {
+        ines.extend_from_slice(chr);
+    }
+    ines
+}
+
+/// Avanza la CPU 6502 + PPU + APU real sobre la ROM para que el propio juego descomprima sus mapas de bits
+/// (ej. el RLE de Konami en Contra) y active su motor musical real en la APU.
+fn populate_real_scenes_and_audio_from_ines(
+    ines_bytes: &[u8],
+    project: &mut NgsProject,
+) -> Result<(), String> {
+    project.scenes.clear();
+    project
+        .nes_live
+        .load_rom_bytes(project.game_title.clone(), ines_bytes)?;
+
+    // 1. Avanzar 75 frames de arranque (descompresión inicial de fuentes y pantalla de título)
+    for _ in 0..75 {
+        project.nes_live.step_frame();
+        project.nes_live.bus.apu.audio_samples.clear();
+    }
+
+    // Presionar START brevemente para fijar el logo de título (en Contra detiene el scroll del logo y lanza el tema de título)
+    project.nes_live.set_controller1(JoypadButtons::START);
+    for _ in 0..6 {
+        project.nes_live.step_frame();
+        project.nes_live.bus.apu.audio_samples.clear();
+    }
+    project.nes_live.set_controller1(JoypadButtons::empty());
+    for _ in 0..35 {
+        project.nes_live.step_frame();
+        project.nes_live.bus.apu.audio_samples.clear();
+    }
+
+    // Capturar Escena 0: Pantalla de Título / Logo y Fuentes Reales + Tema de Título
+    project.capture_current_live_scene(
+        "Escena 1: Pantalla de Título / Logo y Fuentes (Descomprimido)".to_string(),
+    );
+
+    // 2. Presionar START otra vez para iniciar la partida y capturar el sonido de inicio
+    let ram_before_start = project.nes_live.bus.cpu_ram;
+    project.nes_live.set_controller1(JoypadButtons::START);
+    for _ in 0..6 {
+        project.nes_live.step_frame();
+        project.nes_live.bus.apu.audio_samples.clear();
+    }
+    project.nes_live.set_controller1(JoypadButtons::empty());
+    for _ in 0..10 {
+        project.nes_live.step_frame();
+        project.nes_live.bus.apu.audio_samples.clear();
+    }
+    let ram_after_start = project.nes_live.bus.cpu_ram;
+
+    // Detectar qué direcciones de RAM cambiaron al disparar el comando de sonido de Start
+    project.sound_cmd_ram_addrs.clear();
+    for addr in 0x0080..0x01FFusize {
+        if ram_before_start[addr] != ram_after_start[addr] && ram_after_start[addr] > 0 && ram_after_start[addr] < 0x40 {
+            project.sound_cmd_ram_addrs.push(addr as u16);
+        }
+    }
+
+    project.capture_current_live_scene(
+        "Escena 2: Transición / Fanfarria de Inicio de Partida".to_string(),
+    );
+
+    // 3. Avanzar 220 frames hasta que el Nivel 1 (Jungla en Contra) haya descomprimido todos los sprites
+    //    de Bill y Lance, enemigos, balas y bloques del escenario en CHR-RAM y esté sonando el Tema del Nivel 1
+    for _ in 0..220 {
+        project.nes_live.step_frame();
+        project.nes_live.bus.apu.audio_samples.clear();
+    }
+
+    project.capture_current_live_scene(
+        "Escena 3: Nivel 1 En Juego — Sprites Personajes/Enemigos + Escenario + Música Nivel 1".to_string(),
+    );
+
+    // Seleccionar por defecto la Escena 3 (Nivel 1 en juego) donde están todos los sprites y el escenario
+    project.active_scene_idx = project.scenes.len().saturating_sub(1);
+    Ok(())
 }
 
 pub fn load_asm_subroutines(asm_path: &Path, project: &mut NgsProject) -> Result<usize, String> {
@@ -82,7 +241,6 @@ pub fn load_asm_subroutines(asm_path: &Path, project: &mut NgsProject) -> Result
             current_category = "[GAME LOGIC]".to_string();
         }
 
-        // Detectar etiquetas de subrutina como "sub_8123:" o "nmi_vector_8050:"
         if (trimmed.starts_with("sub_") || trimmed.starts_with("nmi_") || trimmed.starts_with("reset_"))
             && trimmed.ends_with(':')
         {
@@ -101,7 +259,6 @@ pub fn load_asm_subroutines(asm_path: &Path, project: &mut NgsProject) -> Result
                 }
             }
 
-            // Si en el cuerpo de la subrutina se toca $4000..$4015, clasificar como [AUDIO / APU]
             let body_joined = preview.join(" ");
             let cat = if body_joined.contains("$400") || body_joined.contains("$4015") {
                 "[AUDIO / APU]".to_string()
@@ -133,7 +290,6 @@ fn extract_subroutines_from_c(raw_c: &str, project: &mut NgsProject) {
         if t.starts_with("case 0x") && t.contains(':') {
             if let Some(hex) = t.strip_prefix("case 0x").and_then(|s| s.get(0..4)) {
                 if let Ok(addr) = u16::from_str_radix(hex, 16) {
-                    // Verificar si este bloque escribe a registros APU (0x4000..0x4015)
                     let mut preview = Vec::new();
                     let mut is_audio = false;
                     let mut is_video = false;
@@ -207,14 +363,4 @@ fn extract_c_byte_array(src: &str, marker: &str) -> Vec<u8> {
         }
     }
     bytes
-}
-
-/// Para juegos CHR-RAM (como Contra), extrae los bancos de PRG_ROM para visualizarlos como tiles 8x8
-fn extract_chr_ram_patterns_from_prg(prg: &[u8]) -> Vec<u8> {
-    if prg.is_empty() {
-        return vec![0u8; 8192];
-    }
-    // Exponemos toda la PRG_ROM alineada a múltiplos de 16 bytes para navegar todos los bancos de datos/gráficos
-    let aligned_len = (prg.len() / 16) * 16;
-    prg[..aligned_len].to_vec()
 }
