@@ -24,6 +24,7 @@ impl SpriteSizeMode {
         }
     }
 
+    #[allow(dead_code)]
     pub fn total_tiles(&self) -> usize {
         let (tw, th, _, _) = self.dimensions();
         tw * th

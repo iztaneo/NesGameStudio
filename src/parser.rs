@@ -193,6 +193,7 @@ fn populate_real_scenes_and_audio_from_ines(
     project.capture_current_live_scene(
         "Pantalla de Inicio / Título (VRAM Activa)".to_string(),
     );
+    project.base_audio_save_state = Some(project.nes_live.to_save_state_bytes());
 
     // 2. Presionar START otra vez para iniciar la partida
     let ram_before_start = project.nes_live.bus.cpu_ram;
@@ -232,6 +233,10 @@ fn populate_real_scenes_and_audio_from_ines(
 
     // Seleccionar por defecto el estado en juego
     project.active_scene_idx = project.scenes.len().saturating_sub(1);
+
+    // Detectar o autodescubrir de forma universal el motor sonoro del juego y sus pistas reales
+    crate::runtime::jukebox_apu::detect_or_discover_audio_engine(project);
+
     Ok(())
 }
 

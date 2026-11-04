@@ -34,6 +34,20 @@ pub struct SubroutineInfo {
     pub preview_asm: Vec<String>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SoundTrigger {
+    Subroutine(u16),
+    RamAddress(u16),
+    Unknown,
+}
+
+#[derive(Clone, Debug)]
+pub struct DiscoveredTrack {
+    pub id: u8,
+    pub title: String,
+    pub is_music: bool,
+}
+
 #[derive(Clone, Debug)]
 pub struct AudioReplacement {
     pub track_id: u8,
@@ -54,6 +68,7 @@ pub struct HdSpriteBinding {
 /// Captura real de una escena del juego (con sus bancos CHR descomprimidos por el motor 6502,
 /// su paleta exacta de 32 bytes, sus 64 sprites OAM, su imagen 256x240 y su estado de CPU/APU).
 #[derive(Clone)]
+#[allow(dead_code)]
 pub struct CapturedScene {
     pub title: String,
     pub chr_8kb: Vec<u8>,
@@ -96,6 +111,9 @@ pub struct NgsProject {
     /// Instancia en vivo del núcleo 6502 + PPU + APU para la Rockola y capturas interactivas
     pub nes_live: Nes,
     pub sound_cmd_ram_addrs: Vec<u16>,
+    pub sound_trigger: SoundTrigger,
+    pub discovered_tracks: Vec<DiscoveredTrack>,
+    pub base_audio_save_state: Option<Vec<u8>>,
     pub modified_tiles: HashMap<usize, [u8; 16]>,
     pub hd_sprites: HashMap<usize, HdSpriteBinding>,
     pub audio_replacements: HashMap<u8, AudioReplacement>,
@@ -127,6 +145,9 @@ impl Default for NgsProject {
             active_scene_idx: 0,
             nes_live: Nes::new_with_demo(),
             sound_cmd_ram_addrs: Vec::new(),
+            sound_trigger: SoundTrigger::Unknown,
+            discovered_tracks: Vec::new(),
+            base_audio_save_state: None,
             modified_tiles: HashMap::new(),
             hd_sprites: HashMap::new(),
             audio_replacements: HashMap::new(),

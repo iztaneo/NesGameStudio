@@ -4,94 +4,6 @@ use eframe::egui::{self, Color32, Pos2, Sense, Stroke, Vec2};
 use nes_emu_rust::controller::JoypadButtons;
 use std::collections::HashMap;
 
-#[derive(Clone, Debug)]
-pub struct TrackEntry {
-    pub id: u8,
-    pub title: String,
-    pub is_music: bool,
-}
-
-pub fn get_tracks_for_game(game_title: &str) -> Vec<TrackEntry> {
-    let lower = game_title.to_lowercase();
-    if lower.contains("contra") {
-        vec![
-            TrackEntry { id: 0x01, title: "Pista 01 — Pantalla de Título & Menú".into(), is_music: true },
-            TrackEntry { id: 0x02, title: "Pista 02 — Nivel 1: Selva / Jungla".into(), is_music: true },
-            TrackEntry { id: 0x03, title: "Pista 03 — Nivel 2: Base 3D Militar".into(), is_music: true },
-            TrackEntry { id: 0x04, title: "Pista 04 — Nivel 3: Cascada".into(), is_music: true },
-            TrackEntry { id: 0x05, title: "Pista 05 — Nivel 5: Campo de Nieve".into(), is_music: true },
-            TrackEntry { id: 0x06, title: "Pista 06 — Nivel 6: Zona Energética".into(), is_music: true },
-            TrackEntry { id: 0x07, title: "Pista 07 — Nivel 7: Hangar".into(), is_music: true },
-            TrackEntry { id: 0x08, title: "Pista 08 — Nivel 8: Guarida Alienígena".into(), is_music: true },
-            TrackEntry { id: 0x09, title: "Pista 09 — Batalla de Jefe (Boss Fight)".into(), is_music: true },
-            TrackEntry { id: 0x0A, title: "Pista 0A — Nivel Completado (Fanfarria)".into(), is_music: true },
-            TrackEntry { id: 0x0B, title: "Pista 0B — Final y Créditos".into(), is_music: true },
-            TrackEntry { id: 0x0C, title: "Pista 0C — Game Over".into(), is_music: true },
-            TrackEntry { id: 0x10, title: "SFX 10 — Disparo de Rifle Normal".into(), is_music: false },
-            TrackEntry { id: 0x11, title: "SFX 11 — Disparo Spread Gun (Escopeta)".into(), is_music: false },
-            TrackEntry { id: 0x12, title: "SFX 12 — Disparo de Rayo Láser".into(), is_music: false },
-            TrackEntry { id: 0x13, title: "SFX 13 — Disparo de Fuego / Lanzallamas".into(), is_music: false },
-            TrackEntry { id: 0x14, title: "SFX 14 — Salto del Soldado".into(), is_music: false },
-            TrackEntry { id: 0x15, title: "SFX 15 — Explosión Pequeña".into(), is_music: false },
-            TrackEntry { id: 0x16, title: "SFX 16 — Explosión Grande / Jefe".into(), is_music: false },
-            TrackEntry { id: 0x17, title: "SFX 17 — Daño / Caída de Soldado".into(), is_music: false },
-            TrackEntry { id: 0x18, title: "SFX 18 — Halcón de Arma en Vuelo".into(), is_music: false },
-            TrackEntry { id: 0x19, title: "SFX 19 — Alarma / Sirena de la Base".into(), is_music: false },
-        ]
-    } else if lower.contains("mario") {
-        vec![
-            TrackEntry { id: 0x01, title: "Pista 01 — Superficie / Overworld".into(), is_music: true },
-            TrackEntry { id: 0x02, title: "Pista 02 — Subterráneo / Underground".into(), is_music: true },
-            TrackEntry { id: 0x03, title: "Pista 03 — Acuático / Underwater".into(), is_music: true },
-            TrackEntry { id: 0x04, title: "Pista 04 — Castillo / Castle".into(), is_music: true },
-            TrackEntry { id: 0x05, title: "Pista 05 — Estrella / Starman".into(), is_music: true },
-            TrackEntry { id: 0x06, title: "Pista 06 — Nivel Completado (Fanfarria)".into(), is_music: true },
-            TrackEntry { id: 0x07, title: "Pista 07 — Muerte / Caída".into(), is_music: true },
-            TrackEntry { id: 0x08, title: "Pista 08 — Game Over".into(), is_music: true },
-            TrackEntry { id: 0x10, title: "SFX 10 — Salto Pequeño".into(), is_music: false },
-            TrackEntry { id: 0x11, title: "SFX 11 — Salto Super Mario".into(), is_music: false },
-            TrackEntry { id: 0x12, title: "SFX 12 — Moneda".into(), is_music: false },
-            TrackEntry { id: 0x13, title: "SFX 13 — Champiñón / Power Up".into(), is_music: false },
-            TrackEntry { id: 0x14, title: "SFX 14 — Bola de Fuego".into(), is_music: false },
-            TrackEntry { id: 0x15, title: "SFX 15 — Pisotón a Enemigo".into(), is_music: false },
-            TrackEntry { id: 0x16, title: "SFX 16 — Caída por Tubería".into(), is_music: false },
-        ]
-    } else if lower.contains("castlevania") {
-        vec![
-            TrackEntry { id: 0x01, title: "Pista 01 — Vampire Killer (Nivel 1)".into(), is_music: true },
-            TrackEntry { id: 0x02, title: "Pista 02 — Stalker (Nivel 2)".into(), is_music: true },
-            TrackEntry { id: 0x03, title: "Pista 03 — Wicked Child (Nivel 3)".into(), is_music: true },
-            TrackEntry { id: 0x04, title: "Pista 04 — Walking on the Edge (Nivel 4)".into(), is_music: true },
-            TrackEntry { id: 0x05, title: "Pista 05 — Heart of Fire (Nivel 5)".into(), is_music: true },
-            TrackEntry { id: 0x06, title: "Pista 06 — Out of Time (Nivel 6)".into(), is_music: true },
-            TrackEntry { id: 0x07, title: "Pista 07 — Poison Mind (Jefe)".into(), is_music: true },
-            TrackEntry { id: 0x08, title: "Pista 08 — Black Night (Final)".into(), is_music: true },
-            TrackEntry { id: 0x10, title: "SFX 10 — Latigazo".into(), is_music: false },
-            TrackEntry { id: 0x11, title: "SFX 11 — Salto".into(), is_music: false },
-            TrackEntry { id: 0x12, title: "SFX 12 — Recoger Corazón".into(), is_music: false },
-            TrackEntry { id: 0x13, title: "SFX 13 — Golpe / Daño".into(), is_music: false },
-        ]
-    } else {
-        // Genérico para CUALQUIER otro juego de NES
-        let mut list = Vec::new();
-        for id in 1..=14 {
-            list.push(TrackEntry {
-                id,
-                title: format!("Pista {:02X} — Tema / Música #{:02X}", id, id),
-                is_music: true,
-            });
-        }
-        for id in 0x10..=0x26 {
-            list.push(TrackEntry {
-                id,
-                title: format!("SFX {:02X} — Efecto de Sonido #{:02X}", id, id),
-                is_music: false,
-            });
-        }
-        list
-    }
-}
-
 pub struct AudioEditorState {
     pub selected_track: u8,
     pub custom_test_id: u8,
@@ -127,7 +39,15 @@ impl AudioEditorState {
              aislar canales con Mute/Solo, memorizar cualquier melodía con un clic o vincular archivos .MP3/.WAV.",
         );
 
-        let tracks = get_tracks_for_game(&project.game_title);
+        if project.discovered_tracks.is_empty() {
+            crate::runtime::jukebox_apu::detect_or_discover_audio_engine(project);
+        }
+        if !project.discovered_tracks.iter().any(|t| t.id == self.selected_track) {
+            if let Some(first) = project.discovered_tracks.first() {
+                self.selected_track = first.id;
+            }
+        }
+        let tracks = project.discovered_tracks.clone();
 
         ui.columns(2, |cols| {
             // =========================================================================
@@ -328,8 +248,8 @@ impl AudioEditorState {
                 ui.heading("🎛️ Mezclador de Canales de Sonido (Solo / Mute)");
 
                 // Indicador de salida física de hardware
-                let dev_name = jukebox.audio_out.active_device_name();
-                let rate = jukebox.audio_out.sample_rate();
+                let dev_name = jukebox.audio_out.as_ref().map(|a| a.active_device_name()).unwrap_or_else(|| "Dispositivo de Audio".to_string());
+                let rate = jukebox.sample_rate();
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new("🔊 Salida:").strong());
                     ui.label(format!("{} ({} Hz)", dev_name, rate));
