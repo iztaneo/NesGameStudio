@@ -57,7 +57,7 @@ impl JukeboxEngine {
                     .nes_live
                     .bus
                     .apu
-                    .set_sample_rate(self.audio_out.sample_rate() as f32);
+                    .set_sample_rate(self.audio_out.sample_rate());
                 self.active_scene_music = scene_idx;
                 self.playing = true;
             }
@@ -77,7 +77,7 @@ impl JukeboxEngine {
             .nes_live
             .bus
             .apu
-            .set_sample_rate(self.audio_out.sample_rate() as f32);
+            .set_sample_rate(self.audio_out.sample_rate());
 
         // Escribir el ID de sonido tanto en las direcciones detectadas como en los registros de cola comunes de Konami/NES
         for &addr in &project.sound_cmd_ram_addrs {
@@ -102,7 +102,7 @@ impl JukeboxEngine {
             .nes_live
             .bus
             .apu
-            .set_sample_rate(self.audio_out.sample_rate() as f32);
+            .set_sample_rate(self.audio_out.sample_rate());
         self.sync_channel_masks(project);
 
         // Si la cola de audio tiene menos de ~3 frames, avanzar la emulación 6502 + APU
@@ -126,7 +126,7 @@ impl JukeboxEngine {
             return Err("Primero abre un juego desde el menú Archivo.".to_string());
         }
         let sample_rate = 44_100u32;
-        project.nes_live.bus.apu.set_sample_rate(sample_rate as f32);
+        project.nes_live.bus.apu.set_sample_rate(sample_rate);
         self.sync_channel_masks(project);
 
         let mut recorded_mono = Vec::with_capacity(sample_rate as usize * 5);

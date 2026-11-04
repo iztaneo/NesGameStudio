@@ -105,9 +105,10 @@ pub fn load_nes_rom_into_project(nes_path: &Path, project: &mut NgsProject) -> R
     populate_real_scenes_and_audio_from_ines(&ines_bytes, project)?;
 
     // Generar también el código C y ASM base en memoria usando el desensamblador de nes_emu_rust
-    project.raw_c_source =
+    let generated_c =
         nes_emu_rust::cpu::disassembler::export_full_c_source(&project.nes_live.bus, &project.game_title);
-    extract_subroutines_from_c(&project.raw_c_source, project);
+    extract_subroutines_from_c(&generated_c, project);
+    project.raw_c_source = generated_c;
 
     Ok(format!(
         "ROM '{}' cargada: PRG={} KB, {} escenas con mapas de bits y música reales capturadas",
