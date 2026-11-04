@@ -3,6 +3,10 @@ mod editors;
 mod parser;
 mod project;
 mod runtime;
+#[cfg(target_os = "windows")]
+mod win32_show;
+
+const WINDOW_TITLE: &str = "NesGameStudio — IDE Visual de Remasterización HD, Audio & Creación 2D/2.5D";
 
 use eframe::egui::{self, Color32};
 use editors::audio::AudioEditorState;
@@ -210,15 +214,26 @@ impl NesGameStudioApp {
 }
 
 fn main() -> eframe::Result<()> {
+    #[cfg(target_os = "windows")]
+    win32_show::ensure_on_default_desktop();
+
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title("NesGameStudio — IDE Visual de Remasterización HD, Audio & Creación 2D/2.5D")
-            .with_inner_size([1180.0, 760.0]),
+            .with_title(WINDOW_TITLE)
+            .with_inner_size([1180.0, 760.0])
+            .with_visible(true)
+            .with_active(true),
         ..Default::default()
     };
     eframe::run_native(
-        "NesGameStudio",
+        WINDOW_TITLE,
         options,
-        Box::new(|_cc| Ok(Box::new(NesGameStudioApp::default()))),
+        Box::new(|cc| {
+            cc.egui_ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+            cc.egui_ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+            #[cfg(target_os = "windows")]
+            win32_show::force_show_window_after_creation(WINDOW_TITLE);
+            Ok(Box::new(NesGameStudioApp::default()))
+        }),
     )
 }
