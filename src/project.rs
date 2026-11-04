@@ -64,6 +64,14 @@ pub struct CapturedScene {
     pub save_state: Vec<u8>,
 }
 
+#[derive(Clone, Debug)]
+pub struct GlobalTile {
+    pub bytes: [u8; 16],
+    pub label: String,
+    pub scene_idx: usize,
+    pub tile_in_scene: usize,
+}
+
 pub struct NgsProject {
     pub loaded: bool,
     pub game_title: String,
@@ -78,7 +86,9 @@ pub struct NgsProject {
     pub vec_irq: u16,
     pub prg_rom: Vec<u8>,
     pub chr_mem: Vec<u8>,
-    /// Escenas capturadas con los mapas de bits reales descomprimidos (Título, Nivel 1, Capturas de usuario)
+    /// Catálogo Global con TODOS los tiles del juego en una sola lista continua
+    pub global_tiles: Vec<GlobalTile>,
+    /// Escenas capturadas para el motor de audio y estados de juego
     pub scenes: Vec<CapturedScene>,
     pub active_scene_idx: usize,
     /// Instancia en vivo del núcleo 6502 + PPU + APU para la Rockola y capturas interactivas
@@ -88,7 +98,8 @@ pub struct NgsProject {
     pub hd_sprites: HashMap<usize, HdSpriteBinding>,
     pub audio_replacements: HashMap<u8, AudioReplacement>,
     pub subroutines: Vec<SubroutineInfo>,
-    pub selected_palette: usize, // 0..3 = Fondo 0..3, 4..7 = Sprites 0..3
+    pub palettes: [[u8; 4]; 8],
+    pub selected_palette: usize,
     pub widescreen_16_9: bool,
 }
 
@@ -108,6 +119,7 @@ impl Default for NgsProject {
             vec_irq: 0x8000,
             prg_rom: Vec::new(),
             chr_mem: Vec::new(),
+            global_tiles: Vec::new(),
             scenes: Vec::new(),
             active_scene_idx: 0,
             nes_live: Nes::new_with_demo(),
@@ -116,7 +128,17 @@ impl Default for NgsProject {
             hd_sprites: HashMap::new(),
             audio_replacements: HashMap::new(),
             subroutines: Vec::new(),
-            selected_palette: 4, // Por defecto Paleta de Sprites #0
+            palettes: [
+                [0x0F, 0x16, 0x27, 0x30], // 0: Acción / Héroe Piel y Rojo
+                [0x0F, 0x12, 0x28, 0x38], // 1: Héroe Jugador 1 (Azul / Contra)
+                [0x0F, 0x16, 0x28, 0x38], // 2: Héroe Jugador 2 (Rojo / Contra)
+                [0x0F, 0x19, 0x29, 0x39], // 3: Selva / Verde / Enemigos
+                [0x0F, 0x01, 0x11, 0x21], // 4: Metálico / Base Militar
+                [0x0F, 0x06, 0x16, 0x26], // 5: Fuego / Explosiones
+                [0x0F, 0x00, 0x10, 0x30], // 6: Monocromo / Gris / HUD
+                [0x0F, 0x14, 0x24, 0x34], // 7: Magia / Púrpura Alien
+            ],
+            selected_palette: 1, // Por defecto Héroe Azul
             widescreen_16_9: false,
         }
     }
@@ -127,59 +149,93 @@ impl NgsProject {
         *self = Self::default();
         self.loaded = true;
         self.game_title = "Nuevo_Juego_NGS".to_string();
-        self.scenes.push(CapturedScene {
-            title: "Banco Inicial (512 Tiles en Blanco)".to_string(),
-            chr_8kb: vec![0u8; 8192],
-            palette_table: [
-                0x0F, 0x00, 0x10, 0x30, 0x0F, 0x16, 0x27, 0x30, 0x0F, 0x19, 0x29, 0x39, 0x0F, 0x01, 0x11, 0x21,
-                0x0F, 0x16, 0x27, 0x30, 0x0F, 0x12, 0x28, 0x38, 0x0F, 0x14, 0x24, 0x34, 0x0F, 0x06, 0x16, 0x26,
-            ],
-            oam: [0xFF; 256],
-            ppu_ctrl_bits: 0,
-            screen_rgb: vec![0u8; 256 * 240 * 3],
-            save_state: Vec::new(),
-        });
-    }
-
-    pub fn active_chr_slice(&self) -> &[u8] {
-        if let Some(sc) = self.scenes.get(self.active_scene_idx) {
-            &sc.chr_8kb
-        } else {
-            &self.chr_mem
+        self.global_tiles.clear();
+        for i in 0..512 {
+            self.global_tiles.push(GlobalTile {
+                bytes: [0u8; 16],
+                label: if i < 256 {
+                    format!("Sprites — Tile #{:02X}", i)
+                } else {
+                    format!("Escenario — Tile #{:02X}", i - 256)
+                },
+                scene_idx: 0,
+                tile_in_scene: i,
+            });
         }
     }
 
-    /// Devuelve los 4 colores NES de la paleta activa (0..3 = Fondo, 4..7 = Sprites) leídos de la escena real
-    pub fn active_palette_4(&self, pal_idx: usize) -> [u8; 4] {
-        let p = pal_idx & 7;
-        if let Some(sc) = self.scenes.get(self.active_scene_idx) {
-            let bg0 = sc.palette_table[0];
-            let base = p * 4;
-            [
-                bg0,
-                sc.palette_table[base + 1],
-                sc.palette_table[base + 2],
-                sc.palette_table[base + 3],
-            ]
-        } else {
-            [0x0F, 0x16, 0x27, 0x30]
+    /// Reconstruye el catálogo unificado con TODOS los gráficos del juego
+    pub fn rebuild_global_tile_catalog(&mut self) {
+        self.global_tiles.clear();
+
+        if !self.scenes.is_empty() {
+            // Ordenar: primero Nivel 1 (Sprites + Escenario del juego), luego Título (Logo + Fuentes)
+            let mut scene_order: Vec<usize> = (0..self.scenes.len()).collect();
+            scene_order.sort_by_key(|&idx| {
+                let non_zero = self.scenes[idx].chr_8kb.iter().filter(|&&b| b != 0).count();
+                std::cmp::Reverse(non_zero)
+            });
+
+            for &sc_idx in &scene_order {
+                let sc = &self.scenes[sc_idx];
+                let prefix = if sc.title.contains("Nivel 1") {
+                    "Nivel 1"
+                } else if sc.title.contains("Título") {
+                    "Pantalla de Título"
+                } else {
+                    sc.title.as_str()
+                };
+
+                let tile_count = sc.chr_8kb.len() / 16;
+                for t_idx in 0..tile_count {
+                    let base = t_idx * 16;
+                    let mut b = [0u8; 16];
+                    b.copy_from_slice(&sc.chr_8kb[base..base + 16]);
+
+                    let label = if t_idx < 256 {
+                        format!("{} — Sprite #{:02X}", prefix, t_idx)
+                    } else {
+                        format!("{} — Bloque #{:02X}", prefix, t_idx - 256)
+                    };
+
+                    self.global_tiles.push(GlobalTile {
+                        bytes: b,
+                        label,
+                        scene_idx: sc_idx,
+                        tile_in_scene: t_idx,
+                    });
+                }
+            }
+        } else if !self.chr_mem.is_empty() {
+            let total = self.chr_mem.len() / 16;
+            for t_idx in 0..total {
+                let base = t_idx * 16;
+                let mut b = [0u8; 16];
+                b.copy_from_slice(&self.chr_mem[base..base + 16]);
+                let bank = t_idx / 256;
+                let in_b = t_idx % 256;
+                self.global_tiles.push(GlobalTile {
+                    bytes: b,
+                    label: format!("Banco CHR #{} — Tile #{:02X}", bank, in_b),
+                    scene_idx: 0,
+                    tile_in_scene: t_idx,
+                });
+            }
         }
     }
 
     pub fn total_tiles(&self) -> usize {
-        self.active_chr_slice().len() / 16
+        self.global_tiles.len()
     }
 
-    pub fn get_tile_pixels(&self, tile_idx: usize) -> [[u8; 8]; 8] {
+    pub fn get_tile_pixels(&self, global_idx: usize) -> [[u8; 8]; 8] {
         let mut out = [[0u8; 8]; 8];
-        let chr = self.active_chr_slice();
-        let base = tile_idx * 16;
-        if base + 16 > chr.len() {
+        let Some(t) = self.global_tiles.get(global_idx) else {
             return out;
-        }
+        };
         for row in 0..8 {
-            let p0 = chr[base + row];
-            let p1 = chr[base + row + 8];
+            let p0 = t.bytes[row];
+            let p1 = t.bytes[row + 8];
             for col in 0..8 {
                 let bit = 7 - col;
                 let lo = (p0 >> bit) & 1;
@@ -190,32 +246,38 @@ impl NgsProject {
         out
     }
 
-    pub fn set_tile_pixel(&mut self, tile_idx: usize, row: usize, col: usize, color_idx: u8) {
-        let Some(sc) = self.scenes.get_mut(self.active_scene_idx) else {
-            return;
-        };
-        let base = tile_idx * 16;
-        if base + 16 > sc.chr_8kb.len() || row >= 8 || col >= 8 {
+    pub fn set_tile_pixel(&mut self, global_idx: usize, row: usize, col: usize, color_idx: u8) {
+        if global_idx >= self.global_tiles.len() || row >= 8 || col >= 8 {
             return;
         }
         let bit = 7 - col;
         let lo = color_idx & 1;
         let hi = (color_idx >> 1) & 1;
 
-        let mut p0 = sc.chr_8kb[base + row] & !(1 << bit);
-        let mut p1 = sc.chr_8kb[base + row + 8] & !(1 << bit);
+        let t = &mut self.global_tiles[global_idx];
+        let mut p0 = t.bytes[row] & !(1 << bit);
+        let mut p1 = t.bytes[row + 8] & !(1 << bit);
         p0 |= lo << bit;
         p1 |= hi << bit;
 
-        sc.chr_8kb[base + row] = p0;
-        sc.chr_8kb[base + row + 8] = p1;
+        t.bytes[row] = p0;
+        t.bytes[row + 8] = p1;
 
-        let mut tile_bytes = [0u8; 16];
-        tile_bytes.copy_from_slice(&sc.chr_8kb[base..base + 16]);
-        self.modified_tiles.insert(tile_idx, tile_bytes);
+        let tile_bytes = t.bytes;
+        let sc_idx = t.scene_idx;
+        let in_sc = t.tile_in_scene;
 
-        // Actualizar también en la instancia en vivo si tiene cartucho
+        self.modified_tiles.insert(in_sc, tile_bytes);
+
+        if let Some(sc) = self.scenes.get_mut(sc_idx) {
+            let base = in_sc * 16;
+            if base + 16 <= sc.chr_8kb.len() {
+                sc.chr_8kb[base..base + 16].copy_from_slice(&tile_bytes);
+            }
+        }
+
         if let Some(cart) = self.nes_live.bus.cartridge.as_mut() {
+            let base = in_sc * 16;
             if base + 16 <= cart.chr_mem.len() {
                 cart.chr_mem[base..base + 16].copy_from_slice(&tile_bytes);
             }

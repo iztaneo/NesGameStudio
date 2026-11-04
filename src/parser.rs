@@ -59,6 +59,8 @@ pub fn load_c_and_asm_into_project(c_path: &Path, project: &mut NgsProject) -> R
 
     // Ejecutar la CPU 6502 + PPU + APU real para descomprimir los mapas de bits reales y capturar la música real
     populate_real_scenes_and_audio_from_ines(&ines_bytes, project)?;
+    project.rebuild_global_tile_catalog();
+    project.rebuild_global_tile_catalog();
 
     // Cargar subrutinas desde el .asm compañero o desde el propio .c
     let candidate_asm = c_path.with_extension("asm");
@@ -116,6 +118,7 @@ pub fn load_nes_rom_into_project(nes_path: &Path, project: &mut NgsProject) -> R
     }
 
     populate_real_scenes_and_audio_from_ines(&ines_bytes, project)?;
+    project.rebuild_global_tile_catalog();
 
     // Generar también el código C y ASM base en memoria usando el desensamblador de nes_emu_rust
     let generated_c =
