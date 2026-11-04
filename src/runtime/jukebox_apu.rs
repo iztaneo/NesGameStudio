@@ -67,28 +67,38 @@ impl JukeboxEngine {
     /// Envía un ID de pista/efecto (#01..#3F) a las casillas de comando de sonido del juego en RAM 6502
     pub fn trigger_game_sound_id(&mut self, project: &mut NgsProject, sound_id: u8) {
         self.current_track_id = sound_id;
-        // Restaurar base desde Escena 0 (Título en reposo) o Escena activa
-        if let Some(sc) = project.scenes.first() {
+
+        // Si es Pista 01 (Título) o 02 (Nivel 1), restaurar directamente el estado donde ya suena
+        if sound_id == 0x01 && !project.scenes.is_empty() {
+            if let Some(sc) = project.scenes.first() {
+                if !sc.save_state.is_empty() {
+                    let _ = project.nes_live.from_save_state_bytes(&sc.save_state);
+                }
+            }
+        } else if (sound_id == 0x02 || sound_id == 0x10) && project.scenes.len() >= 3 {
+            // Nivel 1 en juego
+            let _ = project.nes_live.from_save_state_bytes(&project.scenes[2].save_state);
+        } else if let Some(sc) = project.scenes.first() {
             if !sc.save_state.is_empty() {
                 let _ = project.nes_live.from_save_state_bytes(&sc.save_state);
             }
         }
+
         project
             .nes_live
             .bus
             .apu
             .set_sample_rate(self.audio_out.sample_rate());
 
-        // Escribir el ID de sonido tanto en las direcciones detectadas como en los registros de cola comunes de Konami/NES
+        // Cola de comando de audio del motor Konami (Contra lee $0030, $0031, $0032, $0033 para BGM y SFX)
+        for &addr in &[0x0030usize, 0x0031, 0x0032, 0x0033, 0x0034, 0x00E0, 0x00F0, 0x00F1, 0x00F2, 0x07F0] {
+            project.nes_live.bus.cpu_ram[addr] = sound_id;
+        }
+
         for &addr in &project.sound_cmd_ram_addrs {
             project.nes_live.bus.cpu_ram[(addr as usize) & 0x7FF] = sound_id;
         }
-        // Direcciones de cola de sonido de Konami (Contra / Gradius / Life Force / Castlevania)
-        for &konami_snd_addr in &[0x00F0usize, 0x00F1, 0x00F2, 0x00F3, 0x00F4, 0x00E0, 0x07F0] {
-            if project.sound_cmd_ram_addrs.is_empty() || konami_snd_addr >= 0x00F0 {
-                project.nes_live.bus.cpu_ram[konami_snd_addr] = sound_id;
-            }
-        }
+
         self.playing = true;
     }
 

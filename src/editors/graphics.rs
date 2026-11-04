@@ -1,13 +1,64 @@
 use crate::project::{nes_color_rgb_u8, HdSpriteBinding, NgsProject};
 use eframe::egui::{self, Color32, Pos2, Rect, Sense, Stroke, Vec2};
+use std::collections::VecDeque;
 use std::fs::File;
 use std::io::Write;
 use std::path::Path;
 
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum SpriteSizeMode {
+    Character16x32, // 2x4 tiles (16x32 px) — Bill, Lance, Soldados
+    Block16x16,     // 2x2 tiles (16x16 px) — Bloques, Ítems, Soldado Agachado
+    Boss32x32,      // 4x4 tiles (32x32 px) — Jefes, Torretas y Red Falcon
+    Tile8x8,        // 1x1 tile (8x8 px)   — Tile individual
+}
+
+impl SpriteSizeMode {
+    pub fn dimensions(&self) -> (usize, usize, usize, usize) {
+        // (tiles_w, tiles_h, width_px, height_px)
+        match self {
+            SpriteSizeMode::Character16x32 => (2, 4, 16, 32),
+            SpriteSizeMode::Block16x16 => (2, 2, 16, 16),
+            SpriteSizeMode::Boss32x32 => (4, 4, 32, 32),
+            SpriteSizeMode::Tile8x8 => (1, 1, 8, 8),
+        }
+    }
+
+    pub fn total_tiles(&self) -> usize {
+        let (tw, th, _, _) = self.dimensions();
+        tw * th
+    }
+
+    pub fn name(&self) -> &'static str {
+        match self {
+            SpriteSizeMode::Character16x32 => "🧍 Personaje Completo (16×32: Bill / Lance)",
+            SpriteSizeMode::Block16x16 => "🧱 Bloque / Ítem (16×16)",
+            SpriteSizeMode::Boss32x32 => "👾 Jefe / Torreta (32×32)",
+            SpriteSizeMode::Tile8x8 => "🔲 Tile Individual (8×8)",
+        }
+    }
+}
+
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum TileLayout {
+    HorizontalRows,  // Fila 0: Tile 0, 1 | Fila 1: Tile 2, 3...
+    VerticalColumns, // Columna 0: Tile 0..3 | Columna 1: Tile 4..7 (Sprites NES 8x16)
+}
+
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum ToolMode {
+    Pencil,
+    Eraser,
+    BucketFill,
+}
+
 pub struct GraphicsEditorState {
     pub selected_tile: usize,
     pub active_brush_color: u8,
-    pub metasprite_preview_mode: bool,
+    pub size_mode: SpriteSizeMode,
+    pub layout: TileLayout,
+    pub tool: ToolMode,
+    pub selected_category: String,
     pub status_msg: String,
 }
 
@@ -16,16 +67,17 @@ impl Default for GraphicsEditorState {
         Self {
             selected_tile: 0,
             active_brush_color: 3,
-            metasprite_preview_mode: true,
+            size_mode: SpriteSizeMode::Character16x32,
+            layout: TileLayout::HorizontalRows,
+            tool: ToolMode::Pencil,
+            selected_category: "TODOS".to_string(),
             status_msg: String::new(),
         }
     }
 }
 
 impl GraphicsEditorState {
-    pub fn invalidate_texture(&mut self) {
-        // Mantenido por compatibilidad
-    }
+    pub fn invalidate_texture(&mut self) {}
 
     pub fn ui(&mut self, _ctx: &egui::Context, ui: &mut egui::Ui, project: &mut NgsProject) {
         if !project.loaded {
@@ -42,10 +94,49 @@ impl GraphicsEditorState {
             self.selected_tile = 0;
         }
 
-        // BARRA SUPERIOR: Explicación simple + Selector de paleta de colores
+        // BARRA SUPERIOR 1: Selector de Modo de Tamaño y Distribución
         ui.horizontal_wrapped(|ui| {
             ui.label(
-                egui::RichText::new("🎨 Paleta de Color:")
+                egui::RichText::new("📐 Modo de Edición:")
+                    .strong()
+                    .color(Color32::from_rgb(180, 220, 255)),
+            );
+
+            for mode in [
+                SpriteSizeMode::Character16x32,
+                SpriteSizeMode::Block16x16,
+                SpriteSizeMode::Boss32x32,
+                SpriteSizeMode::Tile8x8,
+            ] {
+                let is_sel = self.size_mode == mode;
+                if ui
+                    .selectable_label(
+                        is_sel,
+                        egui::RichText::new(mode.name())
+                            .strong()
+                            .color(if is_sel { Color32::YELLOW } else { Color32::LIGHT_GRAY }),
+                    )
+                    .clicked()
+                {
+                    self.size_mode = mode;
+                }
+            }
+
+            ui.separator();
+            ui.label(egui::RichText::new("Disposición:").small());
+            let is_h = self.layout == TileLayout::HorizontalRows;
+            if ui.selectable_label(is_h, "Horizontal (Filas)").clicked() {
+                self.layout = TileLayout::HorizontalRows;
+            }
+            if ui.selectable_label(!is_h, "Vertical (8×16 NES)").clicked() {
+                self.layout = TileLayout::VerticalColumns;
+            }
+        });
+
+        // BARRA SUPERIOR 2: Paleta de Color
+        ui.horizontal_wrapped(|ui| {
+            ui.label(
+                egui::RichText::new("🎨 Paleta Activa:")
                     .strong()
                     .color(Color32::from_rgb(180, 220, 255)),
             );
@@ -58,7 +149,7 @@ impl GraphicsEditorState {
                 "Metálico / Base",
                 "Fuego / Explosión",
                 "Monocromo / HUD",
-                "Magia / Púrpura",
+                "Magia / Alien",
             ];
 
             for (idx, name) in pal_names.iter().enumerate() {
@@ -82,93 +173,316 @@ impl GraphicsEditorState {
 
         let active_pal = project.palettes[project.selected_palette];
 
-        // DOS COLUMNAS: Izquierda = Catálogo completo (scroll continuo), Derecha = Editor de píxeles
+        // DOS COLUMNAS: Izquierda = Catálogo Visual Completo, Derecha = Lienzo de Edición Metasprite
         ui.columns(2, |cols| {
-            // COLUMNA 1: Galería Continua con TODOS los tiles del juego
+            // =========================================================================
+            // COLUMNA 1: CATÁLOGO COMPLETO DE GRÁFICOS (TODOS LOS BANCOS Y NIVELES)
+            // =========================================================================
             cols[0].group(|ui| {
                 ui.horizontal(|ui| {
-                    ui.heading("🖼️ Catálogo de Gráficos de Todo el Juego");
+                    ui.heading("🖼️ Catálogo de Gráficos del Juego");
                     ui.label(format!("({} tiles en total)", total_tiles));
                 });
-                ui.label(
-                    egui::RichText::new("Haz scroll para ver todos los personajes, enemigos y bloques. Haz clic en cualquiera:")
-                        .small()
-                        .color(Color32::LIGHT_GRAY),
-                );
+
+                // Filtro por Categorías / Bancos
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(egui::RichText::new("Filtro:").strong());
+
+                    let mut categories = vec!["TODOS".to_string()];
+                    for t in &project.global_tiles {
+                        if !categories.contains(&t.category) {
+                            categories.push(t.category.clone());
+                        }
+                    }
+
+                    egui::ComboBox::from_id_salt("cat_filter_combo")
+                        .selected_text(&self.selected_category)
+                        .show_ui(ui, |ui| {
+                            for cat in &categories {
+                                ui.selectable_value(&mut self.selected_category, cat.clone(), cat);
+                            }
+                        });
+                });
                 ui.add_space(4.0);
 
-                let tile_draw_size = 22.0;
-                let tiles_per_row = 16usize;
-                let total_rows = (total_tiles + tiles_per_row - 1) / tiles_per_row;
-                let grid_width = tile_draw_size * tiles_per_row as f32;
-                let total_height = tile_draw_size * total_rows as f32;
+                // Obtener los índices de tiles que coinciden con el filtro
+                let matching_indices: Vec<usize> = (0..total_tiles)
+                    .filter(|&i| {
+                        if self.selected_category == "TODOS" {
+                            true
+                        } else {
+                            project.global_tiles[i].category == self.selected_category
+                        }
+                    })
+                    .collect();
+
+                let step = match self.size_mode {
+                    SpriteSizeMode::Character16x32 => 8,
+                    SpriteSizeMode::Block16x16 => 4,
+                    SpriteSizeMode::Boss32x32 => 16,
+                    SpriteSizeMode::Tile8x8 => 1,
+                };
+
+                // Agrupar en entidades según el tamaño seleccionado
+                let mut card_bases = Vec::new();
+                let mut i = 0;
+                while i < matching_indices.len() {
+                    card_bases.push(matching_indices[i]);
+                    i += step;
+                }
+
+                ui.label(
+                    egui::RichText::new(format!(
+                        "Mostrando {} entidades en modo {}",
+                        card_bases.len(),
+                        self.size_mode.name()
+                    ))
+                    .small()
+                    .color(Color32::LIGHT_GRAY),
+                );
 
                 egui::ScrollArea::vertical()
-                    .max_height(580.0)
+                    .max_height(540.0)
                     .auto_shrink([false; 2])
                     .show(ui, |ui| {
-                        let (rect, response) = ui.allocate_exact_size(
-                            Vec2::new(grid_width, total_height),
-                            Sense::click(),
-                        );
-                        let painter = ui.painter_at(rect);
-                        painter.rect_filled(rect, 2.0, Color32::from_rgb(14, 16, 22));
+                        match self.size_mode {
+                            SpriteSizeMode::Character16x32 => {
+                                // Grid de 16x32 (4 columnas de tarjetas de personajes)
+                                let card_w = 48.0;
+                                let card_h = 96.0;
+                                let cols_count = 4;
+                                let rows_count = (card_bases.len() + cols_count - 1) / cols_count;
+                                let total_h = rows_count as f32 * (card_h + 8.0);
 
-                        // Renderizar sólo los tiles que están visibles en la pantalla (culling)
-                        let visible_rect = ui.clip_rect();
-                        let start_row = (((visible_rect.min.y - rect.min.y) / tile_draw_size).floor() as isize).max(0) as usize;
-                        let end_row = (((visible_rect.max.y - rect.min.y) / tile_draw_size).ceil() as usize).min(total_rows);
-
-                        for row in start_row..end_row {
-                            for col in 0..tiles_per_row {
-                                let t_idx = row * tiles_per_row + col;
-                                if t_idx >= total_tiles {
-                                    break;
-                                }
-
-                                let origin = Pos2::new(
-                                    rect.min.x + col as f32 * tile_draw_size,
-                                    rect.min.y + row as f32 * tile_draw_size,
+                                let (rect, response) = ui.allocate_exact_size(
+                                    Vec2::new(cols_count as f32 * (card_w + 8.0), total_h),
+                                    Sense::click(),
                                 );
+                                let painter = ui.painter_at(rect);
 
-                                draw_tile_8x8(&painter, project, t_idx, origin, tile_draw_size / 8.0, &active_pal);
+                                let visible_rect = ui.clip_rect();
+                                let start_row = (((visible_rect.min.y - rect.min.y) / (card_h + 8.0)).floor() as isize).max(0) as usize;
+                                let end_row = (((visible_rect.max.y - rect.min.y) / (card_h + 8.0)).ceil() as usize).min(rows_count);
 
-                                // Resaltar si tiene reemplazo HD o si está seleccionado
-                                let tile_rect = Rect::from_min_size(origin, Vec2::splat(tile_draw_size));
-                                if project.hd_sprites.contains_key(&t_idx) {
-                                    painter.rect_stroke(tile_rect, 0.0, Stroke::new(1.5, Color32::from_rgb(0, 220, 255)));
+                                for r in start_row..end_row {
+                                    for c in 0..cols_count {
+                                        let item_idx = r * cols_count + c;
+                                        if item_idx >= card_bases.len() {
+                                            break;
+                                        }
+                                        let base_t = card_bases[item_idx];
+                                        let origin = Pos2::new(
+                                            rect.min.x + c as f32 * (card_w + 8.0),
+                                            rect.min.y + r as f32 * (card_h + 8.0),
+                                        );
+                                        let card_rect = Rect::from_min_size(origin, Vec2::new(card_w, card_h));
+
+                                        let is_sel = base_t == self.selected_tile;
+                                        painter.rect_filled(card_rect, 3.0, Color32::from_rgb(14, 16, 22));
+                                        if is_sel {
+                                            painter.rect_stroke(card_rect, 3.0, Stroke::new(2.0, Color32::YELLOW));
+                                        }
+
+                                        draw_metasprite(
+                                            &painter,
+                                            project,
+                                            base_t,
+                                            self.size_mode,
+                                            self.layout,
+                                            origin,
+                                            card_w / 16.0,
+                                            &active_pal,
+                                        );
+
+                                        let label = format!("#{:03X}", base_t);
+                                        painter.text(
+                                            Pos2::new(origin.x + 4.0, origin.y + card_h - 12.0),
+                                            egui::Align2::LEFT_BOTTOM,
+                                            label,
+                                            egui::FontId::proportional(10.0),
+                                            if is_sel { Color32::YELLOW } else { Color32::LIGHT_GRAY },
+                                        );
+                                    }
                                 }
-                                if t_idx == self.selected_tile {
-                                    painter.rect_stroke(tile_rect, 0.0, Stroke::new(2.2, Color32::YELLOW));
+
+                                if response.clicked() {
+                                    if let Some(pos) = response.interact_pointer_pos() {
+                                        let col = ((pos.x - rect.min.x) / (card_w + 8.0)).floor() as usize;
+                                        let row = ((pos.y - rect.min.y) / (card_h + 8.0)).floor() as usize;
+                                        if col < cols_count {
+                                            let idx = row * cols_count + col;
+                                            if idx < card_bases.len() {
+                                                self.selected_tile = card_bases[idx];
+                                            }
+                                        }
+                                    }
                                 }
                             }
-                        }
+                            SpriteSizeMode::Block16x16 => {
+                                // Grid de 16x16 (6 columnas)
+                                let card_w = 44.0;
+                                let card_h = 44.0;
+                                let cols_count = 6;
+                                let rows_count = (card_bases.len() + cols_count - 1) / cols_count;
+                                let total_h = rows_count as f32 * (card_h + 6.0);
 
-                        if response.clicked() {
-                            if let Some(pos) = response.interact_pointer_pos() {
-                                let col = ((pos.x - rect.min.x) / tile_draw_size).floor() as usize;
-                                let row = ((pos.y - rect.min.y) / tile_draw_size).floor() as usize;
-                                if col < tiles_per_row {
-                                    let clicked_tile = row * tiles_per_row + col;
-                                    if clicked_tile < total_tiles {
-                                        self.selected_tile = clicked_tile;
+                                let (rect, response) = ui.allocate_exact_size(
+                                    Vec2::new(cols_count as f32 * (card_w + 6.0), total_h),
+                                    Sense::click(),
+                                );
+                                let painter = ui.painter_at(rect);
+
+                                for (item_idx, &base_t) in card_bases.iter().enumerate() {
+                                    let c = item_idx % cols_count;
+                                    let r = item_idx / cols_count;
+                                    let origin = Pos2::new(
+                                        rect.min.x + c as f32 * (card_w + 6.0),
+                                        rect.min.y + r as f32 * (card_h + 6.0),
+                                    );
+                                    let card_rect = Rect::from_min_size(origin, Vec2::new(card_w, card_h));
+                                    let is_sel = base_t == self.selected_tile;
+
+                                    painter.rect_filled(card_rect, 2.0, Color32::from_rgb(14, 16, 22));
+                                    if is_sel {
+                                        painter.rect_stroke(card_rect, 2.0, Stroke::new(2.0, Color32::YELLOW));
+                                    }
+
+                                    draw_metasprite(
+                                        &painter,
+                                        project,
+                                        base_t,
+                                        self.size_mode,
+                                        self.layout,
+                                        origin,
+                                        card_w / 16.0,
+                                        &active_pal,
+                                    );
+                                }
+
+                                if response.clicked() {
+                                    if let Some(pos) = response.interact_pointer_pos() {
+                                        let col = ((pos.x - rect.min.x) / (card_w + 6.0)).floor() as usize;
+                                        let row = ((pos.y - rect.min.y) / (card_h + 6.0)).floor() as usize;
+                                        if col < cols_count {
+                                            let idx = row * cols_count + col;
+                                            if idx < card_bases.len() {
+                                                self.selected_tile = card_bases[idx];
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            SpriteSizeMode::Boss32x32 => {
+                                // Grid de Jefes 32x32 (3 columnas)
+                                let card_w = 72.0;
+                                let card_h = 72.0;
+                                let cols_count = 3;
+                                let rows_count = (card_bases.len() + cols_count - 1) / cols_count;
+                                let total_h = rows_count as f32 * (card_h + 8.0);
+
+                                let (rect, response) = ui.allocate_exact_size(
+                                    Vec2::new(cols_count as f32 * (card_w + 8.0), total_h),
+                                    Sense::click(),
+                                );
+                                let painter = ui.painter_at(rect);
+
+                                for (item_idx, &base_t) in card_bases.iter().enumerate() {
+                                    let c = item_idx % cols_count;
+                                    let r = item_idx / cols_count;
+                                    let origin = Pos2::new(
+                                        rect.min.x + c as f32 * (card_w + 8.0),
+                                        rect.min.y + r as f32 * (card_h + 8.0),
+                                    );
+                                    let card_rect = Rect::from_min_size(origin, Vec2::new(card_w, card_h));
+                                    let is_sel = base_t == self.selected_tile;
+
+                                    painter.rect_filled(card_rect, 2.0, Color32::from_rgb(14, 16, 22));
+                                    if is_sel {
+                                        painter.rect_stroke(card_rect, 2.0, Stroke::new(2.0, Color32::YELLOW));
+                                    }
+
+                                    draw_metasprite(
+                                        &painter,
+                                        project,
+                                        base_t,
+                                        self.size_mode,
+                                        self.layout,
+                                        origin,
+                                        card_w / 32.0,
+                                        &active_pal,
+                                    );
+                                }
+
+                                if response.clicked() {
+                                    if let Some(pos) = response.interact_pointer_pos() {
+                                        let col = ((pos.x - rect.min.x) / (card_w + 8.0)).floor() as usize;
+                                        let row = ((pos.y - rect.min.y) / (card_h + 8.0)).floor() as usize;
+                                        if col < cols_count {
+                                            let idx = row * cols_count + col;
+                                            if idx < card_bases.len() {
+                                                self.selected_tile = card_bases[idx];
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            SpriteSizeMode::Tile8x8 => {
+                                // Grid tradicional 8x8 (16 columnas)
+                                let tile_sz = 22.0;
+                                let cols_count = 16usize;
+                                let rows_count = (card_bases.len() + cols_count - 1) / cols_count;
+                                let total_h = rows_count as f32 * tile_sz;
+
+                                let (rect, response) = ui.allocate_exact_size(
+                                    Vec2::new(cols_count as f32 * tile_sz, total_h),
+                                    Sense::click(),
+                                );
+                                let painter = ui.painter_at(rect);
+
+                                for (item_idx, &t_idx) in card_bases.iter().enumerate() {
+                                    let c = item_idx % cols_count;
+                                    let r = item_idx / cols_count;
+                                    let origin = Pos2::new(
+                                        rect.min.x + c as f32 * tile_sz,
+                                        rect.min.y + r as f32 * tile_sz,
+                                    );
+                                    let is_sel = t_idx == self.selected_tile;
+
+                                    draw_tile_8x8(&painter, project, t_idx, origin, tile_sz / 8.0, &active_pal);
+
+                                    let t_rect = Rect::from_min_size(origin, Vec2::splat(tile_sz));
+                                    if is_sel {
+                                        painter.rect_stroke(t_rect, 0.0, Stroke::new(2.2, Color32::YELLOW));
+                                    }
+                                }
+
+                                if response.clicked() {
+                                    if let Some(pos) = response.interact_pointer_pos() {
+                                        let col = ((pos.x - rect.min.x) / tile_sz).floor() as usize;
+                                        let row = ((pos.y - rect.min.y) / tile_sz).floor() as usize;
+                                        if col < cols_count {
+                                            let idx = row * cols_count + col;
+                                            if idx < card_bases.len() {
+                                                self.selected_tile = card_bases[idx];
+                                            }
+                                        }
                                     }
                                 }
                             }
                         }
                     });
 
-                ui.add_space(6.0);
+                ui.add_space(4.0);
                 ui.horizontal(|ui| {
-                    if ui.button("💾 Exportar todo el catálogo a imagen .BMP").clicked() {
+                    if ui.button("💾 Exportar todo el catálogo a .BMP").clicked() {
                         if let Some(path) = rfd::FileDialog::new()
-                            .set_file_name(&format!("{}_graficos_completos.bmp", project.game_title))
+                            .set_file_name(&format!("{}_catalogo_completo.bmp", project.game_title))
                             .add_filter("Imagen BMP", &["bmp"])
                             .save_file()
                         {
                             match export_all_tiles_to_bmp(project, &path) {
-                                Ok(_) => self.status_msg = format!("Exportado correctamente a {}", path.display()),
-                                Err(e) => self.status_msg = format!("Error al exportar: {}", e),
+                                Ok(_) => self.status_msg = format!("Catálogo exportado a {}", path.display()),
+                                Err(e) => self.status_msg = format!("Error: {}", e),
                             }
                         }
                     }
@@ -178,21 +492,56 @@ impl GraphicsEditorState {
                 });
             });
 
-            // COLUMNA 2: Editor del Sprite Seleccionado en Grande
+            // =========================================================================
+            // COLUMNA 2: LIENZO DE DIBUJO CONTINUO METASPRITE (16x32, 16x16, 32x32, 8x8)
+            // =========================================================================
             cols[1].group(|ui| {
-                let tile_label = project
+                let (_, _, w_px, h_px) = self.size_mode.dimensions();
+                let current_label = project
                     .global_tiles
                     .get(self.selected_tile)
                     .map(|t| t.label.as_str())
                     .unwrap_or("Tile");
 
-                ui.heading(format!("✏️ Dibujo del Sprite #{}", self.selected_tile));
-                ui.label(egui::RichText::new(tile_label).color(Color32::from_rgb(180, 220, 255)));
+                ui.heading(format!(
+                    "✏️ Editor de {} (Tile Base #{:03X})",
+                    self.size_mode.name(),
+                    self.selected_tile
+                ));
+                ui.label(egui::RichText::new(current_label).color(Color32::from_rgb(180, 220, 255)));
                 ui.separator();
 
-                // Selector de Color del Pincel
-                ui.label("1. Elige el color del pincel:");
+                // 1. Selector de Herramientas y Colores
                 ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("Herramienta:").strong());
+                    if ui.selectable_label(self.tool == ToolMode::Pencil, "✏️ Lápiz").clicked() {
+                        self.tool = ToolMode::Pencil;
+                    }
+                    if ui.selectable_label(self.tool == ToolMode::Eraser, "🧹 Borrador").clicked() {
+                        self.tool = ToolMode::Eraser;
+                    }
+                    if ui.selectable_label(self.tool == ToolMode::BucketFill, "🪣 Cubeta").clicked() {
+                        self.tool = ToolMode::BucketFill;
+                    }
+
+                    ui.separator();
+                    if ui.button("↔ Voltear X").clicked() {
+                        flip_h_metasprite(project, self.selected_tile, self.size_mode, self.layout);
+                        self.status_msg = "Sprite invertido horizontalmente.".to_string();
+                    }
+                    if ui.button("↕ Voltear Y").clicked() {
+                        flip_v_metasprite(project, self.selected_tile, self.size_mode, self.layout);
+                        self.status_msg = "Sprite invertido verticalmente.".to_string();
+                    }
+                    if ui.button("🗑 Limpiar").clicked() {
+                        clear_metasprite(project, self.selected_tile, self.size_mode, self.layout);
+                        self.status_msg = "Sprite limpiado a color de fondo.".to_string();
+                    }
+                });
+
+                // Selector de Color del Pincel
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("Color:").strong());
                     for c_idx in 0..4u8 {
                         let nes_col = active_pal[c_idx as usize];
                         let [r, g, b] = nes_color_rgb_u8(nes_col);
@@ -201,14 +550,14 @@ impl GraphicsEditorState {
 
                         let tag = match c_idx {
                             0 => "C0 (Fondo)",
-                            1 => "C1 (Color 1)",
-                            2 => "C2 (Color 2)",
-                            _ => "C3 (Color 3)",
+                            1 => "C1 (Piel/Cuerpo)",
+                            2 => "C2 (Ropa/Rifle)",
+                            _ => "C3 (Detalles)",
                         };
 
                         let btn = egui::Button::new(
                             egui::RichText::new(tag)
-                                .size(12.0)
+                                .size(11.0)
                                 .color(if (r as u16 + g as u16 + b as u16) > 380 { Color32::BLACK } else { Color32::WHITE }),
                         )
                         .fill(col32)
@@ -216,113 +565,319 @@ impl GraphicsEditorState {
 
                         if ui.add(btn).clicked() {
                             self.active_brush_color = c_idx;
+                            self.tool = ToolMode::Pencil;
                         }
                     }
                 });
 
                 ui.add_space(8.0);
-                ui.label("2. Pinta los píxeles con el mouse:");
+                ui.label(
+                    egui::RichText::new("Pinta con el mouse directamente sobre la figura completa:")
+                        .small()
+                        .color(Color32::LIGHT_GRAY),
+                );
 
-                ui.horizontal(|ui| {
-                    // Lienzo de edición 8x8 amplio (26px por píxel = 208x208)
-                    let px_scale = 26.0;
-                    let canvas_sz = px_scale * 8.0;
-                    let (c_rect, c_resp) = ui.allocate_exact_size(Vec2::splat(canvas_sz), Sense::click_and_drag());
-                    let c_painter = ui.painter_at(c_rect);
-                    c_painter.rect_filled(c_rect, 0.0, Color32::BLACK);
+                // 2. LIENZO INTERACTIVO (Dibuja continuamente sobre toda la figura)
+                let px_scale = match self.size_mode {
+                    SpriteSizeMode::Character16x32 => 16.0,
+                    SpriteSizeMode::Block16x16 => 20.0,
+                    SpriteSizeMode::Boss32x32 => 11.0,
+                    SpriteSizeMode::Tile8x8 => 30.0,
+                };
 
-                    let pixels = project.get_tile_pixels(self.selected_tile);
+                let canvas_w = px_scale * w_px as f32;
+                let canvas_h = px_scale * h_px as f32;
 
-                    for r in 0..8 {
-                        for c in 0..8 {
-                            let v = pixels[r][c] as usize & 3;
-                            let [cr, cg, cb] = nes_color_rgb_u8(active_pal[v]);
-                            let p_rect = Rect::from_min_size(
-                                Pos2::new(c_rect.min.x + c as f32 * px_scale, c_rect.min.y + r as f32 * px_scale),
-                                Vec2::splat(px_scale - 1.0),
-                            );
-                            c_painter.rect_filled(p_rect, 0.0, Color32::from_rgb(cr, cg, cb));
-                        }
+                let (c_rect, c_resp) = ui.allocate_exact_size(Vec2::new(canvas_w, canvas_h), Sense::click_and_drag());
+                let c_painter = ui.painter_at(c_rect);
+                c_painter.rect_filled(c_rect, 0.0, Color32::BLACK);
+
+                // Dibujar píxeles actuales del metasprite
+                let sprite_pixels = get_metasprite_pixels(project, self.selected_tile, self.size_mode, self.layout);
+
+                for r in 0..h_px {
+                    for c in 0..w_px {
+                        let v = sprite_pixels[r][c] as usize & 3;
+                        let [cr, cg, cb] = nes_color_rgb_u8(active_pal[v]);
+                        let p_rect = Rect::from_min_size(
+                            Pos2::new(c_rect.min.x + c as f32 * px_scale, c_rect.min.y + r as f32 * px_scale),
+                            Vec2::splat(px_scale - 1.0),
+                        );
+                        c_painter.rect_filled(p_rect, 0.0, Color32::from_rgb(cr, cg, cb));
                     }
+                }
 
-                    if c_resp.clicked() || c_resp.dragged() {
-                        if let Some(pos) = c_resp.interact_pointer_pos() {
-                            let col = ((pos.x - c_rect.min.x) / px_scale).floor() as usize;
-                            let row = ((pos.y - c_rect.min.y) / px_scale).floor() as usize;
-                            if row < 8 && col < 8 {
-                                project.set_tile_pixel(self.selected_tile, row, col, self.active_brush_color);
-                            }
-                        }
-                    }
+                // Dibujar líneas de separación de tiles (cada 8 píxeles) para referencia
+                for t_y in 1..(h_px / 8) {
+                    let y = c_rect.min.y + (t_y * 8) as f32 * px_scale;
+                    c_painter.line_segment(
+                        [Pos2::new(c_rect.min.x, y), Pos2::new(c_rect.max.x, y)],
+                        Stroke::new(1.5, Color32::from_rgba_unmultiplied(255, 255, 255, 120)),
+                    );
+                }
+                for t_x in 1..(w_px / 8) {
+                    let x = c_rect.min.x + (t_x * 8) as f32 * px_scale;
+                    c_painter.line_segment(
+                        [Pos2::new(x, c_rect.min.y), Pos2::new(x, c_rect.max.y)],
+                        Stroke::new(1.5, Color32::from_rgba_unmultiplied(255, 255, 255, 120)),
+                    );
+                }
 
-                    ui.add_space(14.0);
-                    // Vista previa Metasprite 16x16 (para ver cómo se conecta con el tile de al lado)
-                    ui.vertical(|ui| {
-                        ui.checkbox(&mut self.metasprite_preview_mode, "Metasprite 16×16");
-                        if self.metasprite_preview_mode {
-                            ui.label(egui::RichText::new("Vista junto a tiles vecinos:").small());
-                            let preview_box = 104.0;
-                            let (m_rect, _) = ui.allocate_exact_size(Vec2::splat(preview_box), Sense::hover());
-                            let m_painter = ui.painter_at(m_rect);
-                            m_painter.rect_filled(m_rect, 2.0, Color32::from_rgb(18, 18, 24));
+                // Interacción de dibujo con el mouse
+                if c_resp.clicked() || c_resp.dragged() {
+                    if let Some(pos) = c_resp.interact_pointer_pos() {
+                        let col = ((pos.x - c_rect.min.x) / px_scale).floor() as isize;
+                        let row = ((pos.y - c_rect.min.y) / px_scale).floor() as isize;
 
-                            let sub_scale = preview_box / 16.0;
-                            let offsets = [
-                                (0usize, 0.0, 0.0),
-                                (1usize, preview_box * 0.5, 0.0),
-                                (16usize, 0.0, preview_box * 0.5),
-                                (17usize, preview_box * 0.5, preview_box * 0.5),
-                            ];
-                            for (off, ox, oy) in offsets {
-                                let neighbor = (self.selected_tile + off).min(total_tiles.saturating_sub(1));
-                                draw_tile_8x8(
-                                    &m_painter,
+                        if col >= 0 && col < w_px as isize && row >= 0 && row < h_px as isize {
+                            let draw_color = match self.tool {
+                                ToolMode::Pencil => self.active_brush_color,
+                                ToolMode::Eraser => 0,
+                                ToolMode::BucketFill => self.active_brush_color,
+                            };
+
+                            if self.tool == ToolMode::BucketFill && c_resp.clicked() {
+                                flood_fill_metasprite(
                                     project,
-                                    neighbor,
-                                    Pos2::new(m_rect.min.x + ox, m_rect.min.y + oy),
-                                    sub_scale,
-                                    &active_pal,
+                                    self.selected_tile,
+                                    self.size_mode,
+                                    self.layout,
+                                    col as usize,
+                                    row as usize,
+                                    draw_color,
+                                );
+                            } else if self.tool != ToolMode::BucketFill {
+                                set_metasprite_pixel(
+                                    project,
+                                    self.selected_tile,
+                                    self.size_mode,
+                                    self.layout,
+                                    col as usize,
+                                    row as usize,
+                                    draw_color,
                                 );
                             }
                         }
-                    });
-                });
-
-                ui.separator();
-                ui.heading("✨ Remasterizar con Imagen HD (32-bit RGBA)");
-                ui.label("Puedes reemplazar este sprite por un dibujo en alta definición (.PNG o .BMP):");
-                ui.add_space(4.0);
-
-                if ui.button("📂 Vincular Imagen HD a este Sprite").clicked() {
-                    if let Some(path) = rfd::FileDialog::new()
-                        .add_filter("Imagen PNG o BMP", &["png", "bmp"])
-                        .pick_file()
-                    {
-                        project.hd_sprites.insert(
-                            self.selected_tile,
-                            HdSpriteBinding {
-                                tile_index: self.selected_tile,
-                                width: 16,
-                                height: 16,
-                                bmp_or_rgba_path: path.display().to_string(),
-                                rgba_pixels: vec![0xFF00E5FF; 256],
-                            },
-                        );
-                        self.status_msg = format!("Imagen HD vinculada al Sprite #{}", self.selected_tile);
                     }
                 }
 
-                if let Some(binding) = project.hd_sprites.get(&self.selected_tile) {
+                ui.separator();
+                // 3. Remasterización en Alta Definición (Sprites HD)
+                ui.heading("✨ Vincular Remasterización HD (PNG / BMP)");
+                ui.label("Asocia una ilustración en alta definición a este personaje completo:");
+                ui.horizontal(|ui| {
+                    if ui.button("📂 Vincular Imagen HD...").clicked() {
+                        if let Some(path) = rfd::FileDialog::new()
+                            .add_filter("Imagen PNG o BMP", &["png", "bmp"])
+                            .pick_file()
+                        {
+                            project.hd_sprites.insert(
+                                self.selected_tile,
+                                HdSpriteBinding {
+                                    tile_index: self.selected_tile,
+                                    width: w_px as u32,
+                                    height: h_px as u32,
+                                    bmp_or_rgba_path: path.display().to_string(),
+                                    rgba_pixels: vec![0xFF00E5FF; w_px * h_px],
+                                },
+                            );
+                            self.status_msg = format!("Imagen HD vinculada al personaje #{:03X}", self.selected_tile);
+                        }
+                    }
+                    if project.hd_sprites.contains_key(&self.selected_tile) {
+                        if ui.button("🗑 Quitar HD").clicked() {
+                            project.hd_sprites.remove(&self.selected_tile);
+                            self.status_msg = "Remasterización HD eliminada.".to_string();
+                        }
+                    }
+                });
+
+                if let Some(hd) = project.hd_sprites.get(&self.selected_tile) {
                     ui.colored_label(
                         Color32::from_rgb(0, 220, 255),
-                        format!("✔ Archivo HD activo: {}", binding.bmp_or_rgba_path),
+                        format!("✔ HD Activo: {}", hd.bmp_or_rgba_path),
                     );
-                    if ui.button("🗑 Quitar reemplazo HD").clicked() {
-                        project.hd_sprites.remove(&self.selected_tile);
-                    }
                 }
             });
         });
+    }
+}
+
+// =========================================================================
+// FUNCIONES AUXILIARES DE LÓGICA METASPRITE Y DIBUJO
+// =========================================================================
+
+fn calc_tile_index(
+    base_tile: usize,
+    tiles_w: usize,
+    tiles_h: usize,
+    layout: TileLayout,
+    t_col: usize,
+    t_row: usize,
+    total_tiles: usize,
+) -> usize {
+    let offset = match layout {
+        TileLayout::HorizontalRows => t_row * tiles_w + t_col,
+        TileLayout::VerticalColumns => t_col * tiles_h + t_row,
+    };
+    (base_tile + offset).min(total_tiles.saturating_sub(1))
+}
+
+pub fn get_metasprite_pixels(
+    project: &NgsProject,
+    base_tile: usize,
+    size_mode: SpriteSizeMode,
+    layout: TileLayout,
+) -> Vec<Vec<u8>> {
+    let (tw, th, w_px, h_px) = size_mode.dimensions();
+    let total_tiles = project.total_tiles();
+    let mut out = vec![vec![0u8; w_px]; h_px];
+
+    for t_row in 0..th {
+        for t_col in 0..tw {
+            let t_idx = calc_tile_index(base_tile, tw, th, layout, t_col, t_row, total_tiles);
+            let sub_pixels = project.get_tile_pixels(t_idx);
+            for r in 0..8 {
+                for c in 0..8 {
+                    out[t_row * 8 + r][t_col * 8 + c] = sub_pixels[r][c];
+                }
+            }
+        }
+    }
+    out
+}
+
+pub fn set_metasprite_pixel(
+    project: &mut NgsProject,
+    base_tile: usize,
+    size_mode: SpriteSizeMode,
+    layout: TileLayout,
+    x: usize,
+    y: usize,
+    color_idx: u8,
+) {
+    let (tw, th, w_px, h_px) = size_mode.dimensions();
+    if x >= w_px || y >= h_px {
+        return;
+    }
+    let total_tiles = project.total_tiles();
+    let t_col = x / 8;
+    let t_row = y / 8;
+    let sub_x = x % 8;
+    let sub_y = y % 8;
+
+    let target_tile = calc_tile_index(base_tile, tw, th, layout, t_col, t_row, total_tiles);
+    project.set_tile_pixel(target_tile, sub_y, sub_x, color_idx);
+}
+
+pub fn flood_fill_metasprite(
+    project: &mut NgsProject,
+    base_tile: usize,
+    size_mode: SpriteSizeMode,
+    layout: TileLayout,
+    start_x: usize,
+    start_y: usize,
+    new_color: u8,
+) {
+    let (_, _, w_px, h_px) = size_mode.dimensions();
+    let mut pixels = get_metasprite_pixels(project, base_tile, size_mode, layout);
+    let target_color = pixels[start_y][start_x];
+    if target_color == new_color {
+        return;
+    }
+
+    let mut queue = VecDeque::new();
+    queue.push_back((start_x, start_y));
+
+    while let Some((cx, cy)) = queue.pop_front() {
+        if cx >= w_px || cy >= h_px || pixels[cy][cx] != target_color {
+            continue;
+        }
+        pixels[cy][cx] = new_color;
+        set_metasprite_pixel(project, base_tile, size_mode, layout, cx, cy, new_color);
+
+        if cx > 0 {
+            queue.push_back((cx - 1, cy));
+        }
+        if cx + 1 < w_px {
+            queue.push_back((cx + 1, cy));
+        }
+        if cy > 0 {
+            queue.push_back((cx, cy - 1));
+        }
+        if cy + 1 < h_px {
+            queue.push_back((cx, cy + 1));
+        }
+    }
+}
+
+pub fn flip_h_metasprite(
+    project: &mut NgsProject,
+    base_tile: usize,
+    size_mode: SpriteSizeMode,
+    layout: TileLayout,
+) {
+    let (_, _, w_px, h_px) = size_mode.dimensions();
+    let pixels = get_metasprite_pixels(project, base_tile, size_mode, layout);
+    for r in 0..h_px {
+        for c in 0..w_px {
+            let flipped_col = pixels[r][w_px - 1 - c];
+            set_metasprite_pixel(project, base_tile, size_mode, layout, c, r, flipped_col);
+        }
+    }
+}
+
+pub fn flip_v_metasprite(
+    project: &mut NgsProject,
+    base_tile: usize,
+    size_mode: SpriteSizeMode,
+    layout: TileLayout,
+) {
+    let (_, _, w_px, h_px) = size_mode.dimensions();
+    let pixels = get_metasprite_pixels(project, base_tile, size_mode, layout);
+    for r in 0..h_px {
+        for c in 0..w_px {
+            let flipped_row = pixels[h_px - 1 - r][c];
+            set_metasprite_pixel(project, base_tile, size_mode, layout, c, r, flipped_row);
+        }
+    }
+}
+
+pub fn clear_metasprite(
+    project: &mut NgsProject,
+    base_tile: usize,
+    size_mode: SpriteSizeMode,
+    layout: TileLayout,
+) {
+    let (_, _, w_px, h_px) = size_mode.dimensions();
+    for r in 0..h_px {
+        for c in 0..w_px {
+            set_metasprite_pixel(project, base_tile, size_mode, layout, c, r, 0);
+        }
+    }
+}
+
+fn draw_metasprite(
+    painter: &egui::Painter,
+    project: &NgsProject,
+    base_tile: usize,
+    size_mode: SpriteSizeMode,
+    layout: TileLayout,
+    origin: Pos2,
+    px_size: f32,
+    pal: &[u8; 4],
+) {
+    let (tw, th, _, _) = size_mode.dimensions();
+    let total_tiles = project.total_tiles();
+    for t_row in 0..th {
+        for t_col in 0..tw {
+            let t_idx = calc_tile_index(base_tile, tw, th, layout, t_col, t_row, total_tiles);
+            let sub_origin = Pos2::new(
+                origin.x + t_col as f32 * 8.0 * px_size,
+                origin.y + t_row as f32 * 8.0 * px_size,
+            );
+            draw_tile_8x8(painter, project, t_idx, sub_origin, px_size, pal);
+        }
     }
 }
 

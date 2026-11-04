@@ -16,10 +16,12 @@ pub fn welcome_ui(ui: &mut egui::Ui) {
             o  Archivo → Abrir Código .C...  (ej. NesEmuRust\\exports\\Contra _USA_.c).");
         step(ui, "2", "Espera unos segundos", "El estudio ejecuta el juego por dentro para que él mismo \
             descomprima sus gráficos y arranque su música.");
-        step(ui, "3", "Explora los Gráficos", "Menú  Vista → Gráficos. Elige una escena, haz clic en un \
-            personaje y edita sus píxeles.");
-        step(ui, "4", "Escucha la Música", "Menú  Vista → Rockola. Haz clic en una escena para oír su \
-            canción y usa Mute / Solo para aislar instrumentos.");
+        step(ui, "3", "Explora y Edita los Gráficos", "Menú  Vista → Gráficos. \
+            Encontrarás todos los gráficos del juego y de todos los bancos. Puedes editarlos directamente como \
+            'Personaje Completo (16×32)', bloques (16×16) o jefes (32×32) como si dibujaras en un lienzo continuo.");
+        step(ui, "4", "Escucha Toda la Música y Efectos", "Menú  Vista → Rockola. \
+            Tienes la lista completa de temas musicales y efectos de sonido para reproducirlos con 1 clic \
+            o reemplazarlos por tus propios archivos .MP3/.WAV.");
         step(ui, "5", "Genera tu versión", "Menú  Compilar → Compilar y Ejecutar .EXE  para jugar con tus cambios.");
     });
 }

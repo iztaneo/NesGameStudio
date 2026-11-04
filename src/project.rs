@@ -68,8 +68,10 @@ pub struct CapturedScene {
 pub struct GlobalTile {
     pub bytes: [u8; 16],
     pub label: String,
+    pub category: String,
     pub scene_idx: usize,
     pub tile_in_scene: usize,
+    pub prg_offset: Option<usize>,
 }
 
 pub struct NgsProject {
@@ -158,18 +160,24 @@ impl NgsProject {
                 } else {
                     format!("Escenario — Tile #{:02X}", i - 256)
                 },
+                category: "Proyecto en Blanco".to_string(),
                 scene_idx: 0,
                 tile_in_scene: i,
+                prg_offset: None,
             });
         }
     }
 
-    /// Reconstruye el catálogo unificado con TODOS los gráficos del juego
+    /// Reconstruye el catálogo unificado con TODOS los gráficos del juego:
+    /// 1. Gráficos en vivo VRAM (Sprites de Bill/Lance y Escenario Selva descomprimidos)
+    /// 2. Pantalla de título y logo
+    /// 3. Gráficos CHR-ROM (si existen)
+    /// 4. TODOS los bancos de PRG-ROM (Niveles 2-8, Base 3D, Cascada, Nieve, Jefes y Red Falcon)
     pub fn rebuild_global_tile_catalog(&mut self) {
         self.global_tiles.clear();
 
+        // 1. Gráficos en vivo descomprimidos por el motor 6502 (Nivel 1 y Título)
         if !self.scenes.is_empty() {
-            // Ordenar: primero Nivel 1 (Sprites + Escenario del juego), luego Título (Logo + Fuentes)
             let mut scene_order: Vec<usize> = (0..self.scenes.len()).collect();
             scene_order.sort_by_key(|&idx| {
                 let non_zero = self.scenes[idx].chr_8kb.iter().filter(|&&b| b != 0).count();
@@ -178,13 +186,8 @@ impl NgsProject {
 
             for &sc_idx in &scene_order {
                 let sc = &self.scenes[sc_idx];
-                let prefix = if sc.title.contains("Nivel 1") {
-                    "Nivel 1"
-                } else if sc.title.contains("Título") {
-                    "Pantalla de Título"
-                } else {
-                    sc.title.as_str()
-                };
+                let is_level1 = sc.title.contains("Nivel 1");
+                let is_title = sc.title.contains("Título");
 
                 let tile_count = sc.chr_8kb.len() / 16;
                 for t_idx in 0..tile_count {
@@ -192,21 +195,44 @@ impl NgsProject {
                     let mut b = [0u8; 16];
                     b.copy_from_slice(&sc.chr_8kb[base..base + 16]);
 
-                    let label = if t_idx < 256 {
-                        format!("{} — Sprite #{:02X}", prefix, t_idx)
+                    let (category, label) = if is_level1 {
+                        if t_idx < 256 {
+                            (
+                                "Sprites Nivel 1 (Bill, Lance, Soldados)".to_string(),
+                                format!("Sprite Nivel 1 #{:02X}", t_idx),
+                            )
+                        } else {
+                            (
+                                "Escenario Selva (Nivel 1)".to_string(),
+                                format!("Bloque Selva #{:02X}", t_idx - 256),
+                            )
+                        }
+                    } else if is_title {
+                        (
+                            "Pantalla de Título (Logo y Fuentes)".to_string(),
+                            format!("Título #{:02X}", t_idx),
+                        )
                     } else {
-                        format!("{} — Bloque #{:02X}", prefix, t_idx - 256)
+                        (
+                            sc.title.clone(),
+                            format!("{} #{:02X}", sc.title, t_idx),
+                        )
                     };
 
                     self.global_tiles.push(GlobalTile {
                         bytes: b,
                         label,
+                        category,
                         scene_idx: sc_idx,
                         tile_in_scene: t_idx,
+                        prg_offset: None,
                     });
                 }
             }
-        } else if !self.chr_mem.is_empty() {
+        }
+
+        // 2. Gráficos de bancos CHR-ROM (si no es CHR-RAM)
+        if !self.is_chr_ram && !self.chr_mem.is_empty() {
             let total = self.chr_mem.len() / 16;
             for t_idx in 0..total {
                 let base = t_idx * 16;
@@ -217,9 +243,53 @@ impl NgsProject {
                 self.global_tiles.push(GlobalTile {
                     bytes: b,
                     label: format!("Banco CHR #{} — Tile #{:02X}", bank, in_b),
+                    category: format!("Banco CHR #{}", bank),
                     scene_idx: 0,
                     tile_in_scene: t_idx,
+                    prg_offset: None,
                 });
+            }
+        }
+
+        // 3. Extracción de TODOS los bancos PRG-ROM (128 KB):
+        // Permite ver todos los gráficos de jefes, Base 3D, Cascada, Campo de Nieve, Zona Energética, etc.
+        let bank_descs = [
+            "Banco PRG #0 (Selva / Intro)",
+            "Banco PRG #1 (Base Militar 3D)",
+            "Banco PRG #2 (Cascada)",
+            "Banco PRG #3 (Campo de Nieve)",
+            "Banco PRG #4 (Zona Energética)",
+            "Banco PRG #5 (Hangar y Jefes)",
+            "Banco PRG #6 (Guarida Alien / Red Falcon)",
+            "Banco PRG #7 (Vectores y Sistema)",
+        ];
+        let total_prg_banks = self.prg_rom.len() / 16384;
+        for b_idx in 0..total_prg_banks {
+            let bank_name = if b_idx < bank_descs.len() {
+                bank_descs[b_idx]
+            } else {
+                "Banco PRG"
+            };
+            let bank_start = b_idx * 16384;
+            let bank_end = bank_start + 16384;
+            let bank_slice = &self.prg_rom[bank_start..bank_end];
+            for t_in_b in 0..(16384 / 16) {
+                let off = t_in_b * 16;
+                let chunk = &bank_slice[off..off + 16];
+                let is_all_zero = chunk.iter().all(|&b| b == 0);
+                let is_all_ff = chunk.iter().all(|&b| b == 0xFF);
+                if !is_all_zero && !is_all_ff {
+                    let mut b = [0u8; 16];
+                    b.copy_from_slice(chunk);
+                    self.global_tiles.push(GlobalTile {
+                        bytes: b,
+                        label: format!("{} — Tile #{:03X}", bank_name, t_in_b),
+                        category: bank_name.to_string(),
+                        scene_idx: 0,
+                        tile_in_scene: t_in_b,
+                        prg_offset: Some(bank_start + off),
+                    });
+                }
             }
         }
     }
@@ -266,6 +336,7 @@ impl NgsProject {
         let tile_bytes = t.bytes;
         let sc_idx = t.scene_idx;
         let in_sc = t.tile_in_scene;
+        let prg_opt = t.prg_offset;
 
         self.modified_tiles.insert(in_sc, tile_bytes);
 
@@ -280,6 +351,17 @@ impl NgsProject {
             let base = in_sc * 16;
             if base + 16 <= cart.chr_mem.len() {
                 cart.chr_mem[base..base + 16].copy_from_slice(&tile_bytes);
+            }
+        }
+
+        if let Some(prg_off) = prg_opt {
+            if prg_off + 16 <= self.prg_rom.len() {
+                self.prg_rom[prg_off..prg_off + 16].copy_from_slice(&tile_bytes);
+            }
+            if let Some(cart) = self.nes_live.bus.cartridge.as_mut() {
+                if prg_off + 16 <= cart.prg_rom.len() {
+                    cart.prg_rom[prg_off..prg_off + 16].copy_from_slice(&tile_bytes);
+                }
             }
         }
     }
