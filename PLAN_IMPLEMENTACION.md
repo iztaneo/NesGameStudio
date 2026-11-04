@@ -476,29 +476,44 @@ NesGameStudio/
 
 ---
 
-## 6. Hoja de Ruta Unificada: Fases Base + Fases `NGS Hybrid Renderer` (`HD-01` a `HD-07`)
+## 6. Hoja de Ruta Maestra Unificada: Las 10 Fases de Implementación (`Fase 1` a `Fase 10`)
 
-### 6.1. Fases del IDE Base, Motor de Juego y `NGScript`
+Esta hoja de ruta integra en orden cronológico y técnico el desarrollo del IDE en Rust (`egui`), el motor de juego en C11, el lenguaje `NGScript`, el Copiloto IA y las etapas `HD-01` a `HD-07` del **`NGS Hybrid Renderer`**:
 
-| Fase | Qué construimos | Tiempo Estimado | Consumo de Tokens Estimado | Por qué es rápido |
-| :--- | :--- | :---: | :---: | :--- |
-| **Fase 1: Base del IDE, Galería Gráfica y Rockola Aislada** | Ventana `egui`, lector de `.c`/`.asm`, visor de todos los sprites (`CHR`) y reproductor aislado de música/efectos (*Sound Test* + `.WAV`). | **~35 - 45 min** | 🟢 **Bajo (~40k - 60k)** | Reutilizamos directamente la PPU y APU que ya programamos en `NesEmuRust`. |
-| **Fase 2: Motor Gameplay C (`gameplay/*.h`) y Abstracción `HD-01`** | `ngs_renderer_api.h`, cámara `16:9`, Scroll Horizontal/Vertical/8-Way, Colisiones (`AABB` + Mapa) y separación respecto a Win32/GDI. | **~45 - 55 min** | 🟢 **Bajo-Medio (~65k - 85k)** | Cabeceras `.h`/`.c` independientes en C11 (~150 líneas cada una). |
-| **Fase 3: Lenguaje `NGScript`, Transpilador a C y Copiloto IA** | El traductor de `.ngscript` a `scripts/*.h` (IA, estados, colisiones, efectos propios) + conector IA (`src/ai_copilot.rs`). | **~45 - 55 min** | 🟡 **Medio (~70k - 90k)** | Parser declarativo compacto en Rust (~300 líneas). |
-| **Fase 4: Editor de Mapas, Diálogos RPG, Cinemáticas *In-Engine* y `Sfxr`** | Lienzo para pintar niveles/triggers, editor de diálogos RPG, línea de tiempo de escenas con el motor y generador de sonidos retro. | **~45 - 55 min** | 🟡 **Medio (~80k - 110k)** | Cada herramienta visual vive en su propia pestaña modular de `egui`. |
-| **Fase 5: *Time Rewind*, Cooperativo 4P/Netplay, Logros y Compilación** | Rebobinado en vivo, *Bullet Time*, logros en pantalla y empaquetado `.exe`. | **~30 - 40 min** | 🟢 **Bajo (~40k - 60k)** | Conecta los módulos de gameplay y empaqueta el ejecutable final. |
+### Bloque 1: Cimientos del IDE, Compatibilidad Retro y Abstracción GPU
 
-### 6.2. Fases del Motor Gráfico `NGS Hybrid Renderer` (`HD-01` a `HD-07`)
+| # | Fase | Prioridad | Qué Construimos | Criterio de Aceptación |
+| :---: | :--- | :---: | :--- | :--- |
+| **1** | **Base del IDE (`egui`), Galería Gráfica y Rockola Aislada** | 🔴 Crítica | Ventana principal, proyectos `.ngs.json`, lector `.c`/`.asm`, **Galería Total de Gráficos (`CHR-ROM`/`CHR-RAM`)** y **Rockola Aislada (*Sound Test* + exportar `.WAV` + inyector `.MP3`/`.WAV`)**. | Abrir un `.c`/`.asm` exportado por `NesEmuRust`, explorar todos sus bancos gráficos y escuchar sus pistas aisladas por canal. |
+| **2** | **Abstracción Gráfica y Modo *Classic 2D* por GPU (`HD-01`)** | 🔴 Crítica | Definir `ngs_renderer_api.h`, separar `Win32/GDI` de la lógica, integrar `ngs_gpu_sdl3.c` + fallback `ngs_platform_win32.c`, *sprite batching* y escalado entero. | Ejecutar escena de prueba a `60 FPS` conservando la apariencia 2D clásica sin dependencias directas de Win32 en la lógica. |
 
-| Fase HD | Prioridad | Actividades Principales | Criterio de Aceptación |
-| :--- | :---: | :--- | :--- |
-| **Fase HD-01: Abstracción Gráfica y Renderizador GPU** | 🔴 Crítica | Definir `ngs_renderer_api.h`, separar GDI de la lógica, integrar backend `SDL3 GPU`, *sprite batching* y conservar modo clásico. | Escena de prueba a 60 FPS sin dependencias directas de Win32 en la lógica del juego. |
-| **Fase HD-02: Enhanced 2D** | 🟠 Alta | Texturas HD RGBA, transparencias, *parallax*, iluminación 2D, *normal maps* para sprites, materiales y partículas. | Escena 2D HD multicapa con iluminación dinámica y *normal maps* editable desde `NesGameStudio`. |
-| **Fase HD-03: Renderizado Híbrido 2D/3D (HD-2D)** | 🟠 Alta | Geometría 3D, cámaras en perspectiva, sprites como *billboards* con profundidad, *depth buffer*, materiales iluminados y sombras proyectadas. | Escena con personajes pixel art sobre geometría 3D, iluminación dinámica y sombras coherentes. |
-| **Fase HD-04: Editor Visual Híbrido (`NGS Scene Composer`)** | 🟠 Alta | Editor de escenas 3D (`scene_editor.rs`), manipuladores de transformación, inspector de materiales, luces, cámaras y serialización `.ngscene`. | Crear, guardar, reabrir y compilar una escena híbrida completa sin modificar código C a mano. |
-| **Fase HD-05: Integración Retro (`ngs_nes_adapter.c`)** | 🟠 Alta | Conectar renderizador con `NesEmuRust`, perfiles de reemplazo HD/3D, sincronizar cámaras y conmutar modos *Original / Enhanced / Hybrid*. | Recompilar una ROM de prueba legalmente distribuible y presentar su versión híbrida manteniendo lógica idéntica. |
-| **Fase HD-06: Efectos Cinematográficos y Optimización** | 🟡 Media | *Bloom*, *Depth of Field*, *Color Grading*, efectos atmosféricos, reducción de *draw calls*, perfiles gráficos y *profiling* CPU/GPU. | Calidad visual configurable a 1080p / 60 FPS sin fugas de memoria GPU entre escenas. |
-| **Fase HD-07: Backends Multiplataforma** | 🔵 Posterior | Consolidar `ngs_renderer_api.h`, adaptar pipeline de shaders y validar en Windows, Linux, macOS, Steam Deck, WebAssembly y SDKs de consolas. | Compilar y ejecutar el mismo proyecto en al menos dos plataformas de escritorio y dejar listo el puente para consolas. |
+### Bloque 2: Renderizado 2D Moderno, Física, Colisiones y Lenguaje `NGScript`
+
+| # | Fase | Prioridad | Qué Construimos | Criterio de Aceptación |
+| :---: | :--- | :---: | :--- | :--- |
+| **3** | **Renderizador *Enhanced 2D*, Widescreen y Scrolling (`HD-02`)** | 🟠 Alta | `ngs_renderer_2d.c`, `ngs_materials.c`, `ngs_lighting.c`: Texturas HD RGBA, **Normal Maps para sprites**, iluminación 2D, partículas, Widescreen `16:9`/`21:9` y cámaras con **Scroll Horizontal, Vertical, Auto y 8-Way** + *Parallax*. | Escena 2D HD multicapa con iluminación dinámica, *normal maps* y scrolling multidireccional editable desde `NesGameStudio`. |
+| **4** | **Motor de Colisiones Automático y Transpilador `NGScript`** | 🟠 Alta | `ngs_collision.h` (Colisión Mapa `O(1)`, `Hitbox/Hurtbox AABB` y Triggers) + **Transpilador de `NGScript` (`.ngscript` → `scripts/*.h`)** para IA, estados, `efecto_particulas` y `shader_2d` sin tocar `main.c`. | Programar un jefe con estados, colisiones y partículas propias en `.ngscript` y compilarlo automáticamente a C11. |
+
+### Bloque 3: Herramientas de Creación (Mapas, RPG, Cinemáticas, Audio y Copiloto IA)
+
+| # | Fase | Prioridad | Qué Construimos | Criterio de Aceptación |
+| :---: | :--- | :---: | :--- | :--- |
+| **5** | **Editor de Niveles, Diálogos RPG, Cinemáticas *In-Engine* y `Sfxr`** | 🟠 Alta | Lienzo de mapas/colisiones, **Editor de Árboles de Diálogo y Modo RPG (`ngs_rpg_dialogue.h`)**, **Director de Cinemáticas *In-Engine* (`ngs_cutscenes.h`)** y **Generador `Sfxr` + *Piano Roll***. | Crear un nivel jugable con diálogo RPG ramificado y una escena cinemática ejecutada en vivo por el motor. |
+| **6** | **Copiloto IA Universal Multi-Modelo y Buscador de Variables RAM** | 🟠 Alta | `src/ai_copilot.rs` compatible con **Gemini, Claude, OpenAI, DeepSeek y Ollama/LM Studio local** (generador de `NGScript`, diálogos, escenas y **Modo Profesor Educativo**) + Escáner de variables `RAM`. | Generar un comportamiento `.ngscript` o diálogo RPG desde el chat IA local/nube e inyectarlo en vivo. |
+
+### Bloque 4: Motor Híbrido 2D/3D (Estética HD-2D) y Compositor de Escenas
+
+| # | Fase | Prioridad | Qué Construimos | Criterio de Aceptación |
+| :---: | :--- | :---: | :--- | :--- |
+| **7** | **Renderizador Híbrido 2D/3D — Estilo HD-2D (`HD-03`)** | 🟠 Alta | `ngs_renderer_3d.c`: Geometría y escenarios 3D con *depth buffer*, sprites pixel art como *billboards* / planos orientados, cámaras 3D en perspectiva, materiales iluminados y sombras proyectadas. | Ejecutar escena con personajes pixel art dentro de un escenario 3D con iluminación dinámica y sombras coherentes. |
+| **8** | **Editor Visual Híbrido (`HD-04`) e Integración Retro (`HD-05`)** | 🟠 Alta | `NGS Scene Composer` (`scene_editor.rs`, `material_editor.rs`, `lighting_editor.rs`, `camera_editor.rs`, `.ngscene`/`.ngmat`/`.ngshader`) + `ngs_nes_adapter.c` para conmutar modos *Original / Enhanced / Hybrid*. | Crear, guardar y compilar una escena híbrida sin tocar C a mano, y modernizar una ROM de prueba manteniendo su lógica intacta. |
+
+### Bloque 5: Posprocesamiento Cinematográfico, Poderes Avanzados y Multiplataforma
+
+| # | Fase | Prioridad | Qué Construimos | Criterio de Aceptación |
+| :---: | :--- | :---: | :--- | :--- |
+| **9** | **Efectos Cinematográficos (`HD-06`), *Time Rewind*, 4P Netplay y Logros** | 🟡 Media | `ngs_postprocess.c` (*Bloom, Depth of Field, Vignette, Color Grading, CRT*, perfiles de calidad y *profiling*) + *Time Rewind / Bullet Time* (`ngs_time_control.h`), Cooperativo 2-4P / Netplay UDP (`ngs_netplay.h`) y Logros/Overlay (`ngs_overlay_ui.h`). | Demostrar calidad visual configurable a `1080p / 60 FPS` con rebobinado en vivo, logros y perfiles de rendimiento sin fugas GPU. |
+| **10** | **Backends Multiplataforma y Empaquetado Final (`HD-07`)** | 🔵 Posterior | Consolidar `ngs_renderer_api.h` y el pipeline de shaders para **Windows, Linux, macOS, Steam Deck y WebAssembly**, dejando lista la capa de validación para SDKs de **Xbox Series X\|S, PS5 y Switch**. | Compilar y ejecutar el mismo proyecto en al menos dos plataformas de escritorio sin modificar el código del juego. |
 
 ---
 
