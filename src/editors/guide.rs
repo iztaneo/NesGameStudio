@@ -12,8 +12,8 @@ pub fn welcome_ui(ui: &mut egui::Ui) {
     egui::Frame::group(ui.style()).inner_margin(16.0).show(ui, |ui| {
         ui.label(RichText::new("¿Cómo empiezo?").strong().size(18.0));
         ui.add_space(6.0);
-        step(ui, "1", "Abre un juego", "Menú  Archivo → Abrir ROM .NES...  (ej. rooms\\Contra (USA).nes)\n\
-            o  Archivo → Abrir Código .C...  (ej. NesEmuRust\\exports\\Contra _USA_.c).");
+        step(ui, "1", "Abre cualquier juego de NES", "Menú  Archivo → Abrir ROM .NES...  (cualquier juego: Super Mario, Megaman, Castlevania, Contra, etc.)\n\
+            o  Archivo → Abrir Código .C...  (archivo exportado desde NesEmuRust).");
         step(ui, "2", "Espera unos segundos", "El estudio ejecuta el juego por dentro para que él mismo \
             descomprima sus gráficos y arranque su música.");
         step(ui, "3", "Explora y Edita los Gráficos", "Menú  Vista → Gráficos. \

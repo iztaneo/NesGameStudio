@@ -7,7 +7,7 @@ use std::path::Path;
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum SpriteSizeMode {
-    Character16x32, // 2x4 tiles (16x32 px) — Bill, Lance, Soldados
+    Character16x32, // 2x4 tiles (16x32 px) — Personajes altos completos
     Block16x16,     // 2x2 tiles (16x16 px) — Bloques, Ítems, Soldado Agachado
     Boss32x32,      // 4x4 tiles (32x32 px) — Jefes, Torretas y Red Falcon
     Tile8x8,        // 1x1 tile (8x8 px)   — Tile individual
@@ -31,9 +31,9 @@ impl SpriteSizeMode {
 
     pub fn name(&self) -> &'static str {
         match self {
-            SpriteSizeMode::Character16x32 => "🧍 Personaje Completo (16×32: Bill / Lance)",
-            SpriteSizeMode::Block16x16 => "🧱 Bloque / Ítem (16×16)",
-            SpriteSizeMode::Boss32x32 => "👾 Jefe / Torreta (32×32)",
+            SpriteSizeMode::Character16x32 => "🧍 Personaje Completo (16×32)",
+            SpriteSizeMode::Block16x16 => "🧱 Bloque / Metatile (16×16)",
+            SpriteSizeMode::Boss32x32 => "👾 Sprite Grande / Jefe (32×32)",
             SpriteSizeMode::Tile8x8 => "🔲 Tile Individual (8×8)",
         }
     }
@@ -142,14 +142,14 @@ impl GraphicsEditorState {
             );
 
             let pal_names = [
-                "Acción / Cálido",
-                "Héroe Azul (P1)",
-                "Héroe Rojo (P2)",
-                "Selva / Verde",
-                "Metálico / Base",
-                "Fuego / Explosión",
+                "Cálida / Rojos",
+                "Fría / Azules",
+                "Fuego / Naranjas",
+                "Naturaleza / Verdes",
+                "Metálica / Grises",
+                "Tierra / Marrones",
                 "Monocromo / HUD",
-                "Magia / Alien",
+                "Mágica / Violeta",
             ];
 
             for (idx, name) in pal_names.iter().enumerate() {

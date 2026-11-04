@@ -160,8 +160,8 @@ fn build_ines_from_extracted(
     ines
 }
 
-/// Avanza la CPU 6502 + PPU + APU real sobre la ROM para que el propio juego descomprima sus mapas de bits
-/// (ej. el RLE de Konami en Contra) y active su motor musical real en la APU.
+/// Avanza la CPU 6502 + PPU + APU real sobre la ROM para que el propio juego inicialice sus mapas de bits
+/// y active su motor musical real en la APU.
 fn populate_real_scenes_and_audio_from_ines(
     ines_bytes: &[u8],
     project: &mut NgsProject,
@@ -171,13 +171,13 @@ fn populate_real_scenes_and_audio_from_ines(
         .nes_live
         .load_rom_bytes(project.game_title.clone(), ines_bytes)?;
 
-    // 1. Avanzar 75 frames de arranque (descompresión inicial de fuentes y pantalla de título)
+    // 1. Avanzar 75 frames de arranque (inicialización de PPU y pantalla de inicio)
     for _ in 0..75 {
         project.nes_live.step_frame();
         project.nes_live.bus.apu.audio_samples.clear();
     }
 
-    // Presionar START brevemente para fijar el logo de título (en Contra detiene el scroll del logo y lanza el tema de título)
+    // Presionar START brevemente para avanzar la pantalla de inicio o demo del juego
     project.nes_live.set_controller1(JoypadButtons::START);
     for _ in 0..6 {
         project.nes_live.step_frame();
@@ -189,12 +189,12 @@ fn populate_real_scenes_and_audio_from_ines(
         project.nes_live.bus.apu.audio_samples.clear();
     }
 
-    // Capturar Escena 0: Pantalla de Título / Logo y Fuentes Reales + Tema de Título
+    // Capturar Estado 1: Pantalla de Inicio / Título
     project.capture_current_live_scene(
-        "Escena 1: Pantalla de Título / Logo y Fuentes (Descomprimido)".to_string(),
+        "Pantalla de Inicio / Título (VRAM Activa)".to_string(),
     );
 
-    // 2. Presionar START otra vez para iniciar la partida y capturar el sonido de inicio
+    // 2. Presionar START otra vez para iniciar la partida
     let ram_before_start = project.nes_live.bus.cpu_ram;
     project.nes_live.set_controller1(JoypadButtons::START);
     for _ in 0..6 {
@@ -217,21 +217,20 @@ fn populate_real_scenes_and_audio_from_ines(
     }
 
     project.capture_current_live_scene(
-        "Escena 2: Transición / Fanfarria de Inicio de Partida".to_string(),
+        "Transición / Inicio de Partida".to_string(),
     );
 
-    // 3. Avanzar 220 frames hasta que el Nivel 1 (Jungla en Contra) haya descomprimido todos los sprites
-    //    de Bill y Lance, enemigos, balas y bloques del escenario en CHR-RAM y esté sonando el Tema del Nivel 1
+    // 3. Avanzar 220 frames hasta que el juego esté en plena ejecución con sprites y fondo activos
     for _ in 0..220 {
         project.nes_live.step_frame();
         project.nes_live.bus.apu.audio_samples.clear();
     }
 
     project.capture_current_live_scene(
-        "Escena 3: Nivel 1 En Juego — Sprites Personajes/Enemigos + Escenario + Música Nivel 1".to_string(),
+        "En Juego — Sprites y Fondo Activos".to_string(),
     );
 
-    // Seleccionar por defecto la Escena 3 (Nivel 1 en juego) donde están todos los sprites y el escenario
+    // Seleccionar por defecto el estado en juego
     project.active_scene_idx = project.scenes.len().saturating_sub(1);
     Ok(())
 }

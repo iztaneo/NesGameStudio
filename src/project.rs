@@ -131,16 +131,16 @@ impl Default for NgsProject {
             audio_replacements: HashMap::new(),
             subroutines: Vec::new(),
             palettes: [
-                [0x0F, 0x16, 0x27, 0x30], // 0: Acción / Héroe Piel y Rojo
-                [0x0F, 0x12, 0x28, 0x38], // 1: Héroe Jugador 1 (Azul / Contra)
-                [0x0F, 0x16, 0x28, 0x38], // 2: Héroe Jugador 2 (Rojo / Contra)
-                [0x0F, 0x19, 0x29, 0x39], // 3: Selva / Verde / Enemigos
-                [0x0F, 0x01, 0x11, 0x21], // 4: Metálico / Base Militar
-                [0x0F, 0x06, 0x16, 0x26], // 5: Fuego / Explosiones
-                [0x0F, 0x00, 0x10, 0x30], // 6: Monocromo / Gris / HUD
-                [0x0F, 0x14, 0x24, 0x34], // 7: Magia / Púrpura Alien
+                [0x0F, 0x16, 0x27, 0x30], // 0: Paleta Cálida / Rojos
+                [0x0F, 0x12, 0x28, 0x38], // 1: Paleta Fría / Azules
+                [0x0F, 0x16, 0x28, 0x38], // 2: Paleta Fuego / Naranjas
+                [0x0F, 0x19, 0x29, 0x39], // 3: Paleta Naturaleza / Verdes
+                [0x0F, 0x01, 0x11, 0x21], // 4: Paleta Metálica / Grises
+                [0x0F, 0x06, 0x16, 0x26], // 5: Paleta Tierra / Marrones
+                [0x0F, 0x00, 0x10, 0x30], // 6: Monocromo / HUD
+                [0x0F, 0x14, 0x24, 0x34], // 7: Paleta Mágica / Violeta
             ],
-            selected_palette: 1, // Por defecto Héroe Azul
+            selected_palette: 1,
             widescreen_16_9: false,
         }
     }
@@ -169,14 +169,13 @@ impl NgsProject {
     }
 
     /// Reconstruye el catálogo unificado con TODOS los gráficos del juego:
-    /// 1. Gráficos en vivo VRAM (Sprites de Bill/Lance y Escenario Selva descomprimidos)
-    /// 2. Pantalla de título y logo
-    /// 3. Gráficos CHR-ROM (si existen)
-    /// 4. TODOS los bancos de PRG-ROM (Niveles 2-8, Base 3D, Cascada, Nieve, Jefes y Red Falcon)
+    /// 1. Gráficos en vivo VRAM (descomprimidos dinámicamente por la PPU/CPU)
+    /// 2. Gráficos de bancos CHR-ROM (si el cartucho tiene CHR-ROM)
+    /// 3. TODOS los bancos de PRG-ROM (16 KB por banco para cualquier juego)
     pub fn rebuild_global_tile_catalog(&mut self) {
         self.global_tiles.clear();
 
-        // 1. Gráficos en vivo descomprimidos por el motor 6502 (Nivel 1 y Título)
+        // 1. Gráficos en vivo VRAM (descomprimidos dinámicamente por la PPU/CPU)
         if !self.scenes.is_empty() {
             let mut scene_order: Vec<usize> = (0..self.scenes.len()).collect();
             scene_order.sort_by_key(|&idx| {
@@ -186,8 +185,8 @@ impl NgsProject {
 
             for &sc_idx in &scene_order {
                 let sc = &self.scenes[sc_idx];
-                let is_level1 = sc.title.contains("Nivel 1");
-                let is_title = sc.title.contains("Título");
+                let is_in_game = sc.title.contains("En Juego") || sc.title.contains("Nivel");
+                let is_title = sc.title.contains("Título") || sc.title.contains("Inicio");
 
                 let tile_count = sc.chr_8kb.len() / 16;
                 for t_idx in 0..tile_count {
@@ -195,23 +194,30 @@ impl NgsProject {
                     let mut b = [0u8; 16];
                     b.copy_from_slice(&sc.chr_8kb[base..base + 16]);
 
-                    let (category, label) = if is_level1 {
+                    let (category, label) = if is_in_game {
                         if t_idx < 256 {
                             (
-                                "Sprites Nivel 1 (Bill, Lance, Soldados)".to_string(),
-                                format!("Sprite Nivel 1 #{:02X}", t_idx),
+                                "Tabla de Sprites (0x0000)".to_string(),
+                                format!("Sprite #{:02X}", t_idx),
                             )
                         } else {
                             (
-                                "Escenario Selva (Nivel 1)".to_string(),
-                                format!("Bloque Selva #{:02X}", t_idx - 256),
+                                "Tabla de Fondo (0x1000)".to_string(),
+                                format!("Tile Fondo #{:02X}", t_idx - 256),
                             )
                         }
                     } else if is_title {
-                        (
-                            "Pantalla de Título (Logo y Fuentes)".to_string(),
-                            format!("Título #{:02X}", t_idx),
-                        )
+                        if t_idx < 256 {
+                            (
+                                "Pantalla de Inicio — Sprites".to_string(),
+                                format!("Inicio Sprite #{:02X}", t_idx),
+                            )
+                        } else {
+                            (
+                                "Pantalla de Inicio — Fondo".to_string(),
+                                format!("Inicio Fondo #{:02X}", t_idx - 256),
+                            )
+                        }
                     } else {
                         (
                             sc.title.clone(),
@@ -243,7 +249,7 @@ impl NgsProject {
                 self.global_tiles.push(GlobalTile {
                     bytes: b,
                     label: format!("Banco CHR #{} — Tile #{:02X}", bank, in_b),
-                    category: format!("Banco CHR #{}", bank),
+                    category: format!("Banco CHR #{} (8 KB)", bank),
                     scene_idx: 0,
                     tile_in_scene: t_idx,
                     prg_offset: None,
@@ -251,25 +257,10 @@ impl NgsProject {
             }
         }
 
-        // 3. Extracción de TODOS los bancos PRG-ROM (128 KB):
-        // Permite ver todos los gráficos de jefes, Base 3D, Cascada, Campo de Nieve, Zona Energética, etc.
-        let bank_descs = [
-            "Banco PRG #0 (Selva / Intro)",
-            "Banco PRG #1 (Base Militar 3D)",
-            "Banco PRG #2 (Cascada)",
-            "Banco PRG #3 (Campo de Nieve)",
-            "Banco PRG #4 (Zona Energética)",
-            "Banco PRG #5 (Hangar y Jefes)",
-            "Banco PRG #6 (Guarida Alien / Red Falcon)",
-            "Banco PRG #7 (Vectores y Sistema)",
-        ];
+        // 3. Extracción de patrones de TODOS los bancos PRG-ROM (16 KB por banco para cualquier juego)
         let total_prg_banks = self.prg_rom.len() / 16384;
         for b_idx in 0..total_prg_banks {
-            let bank_name = if b_idx < bank_descs.len() {
-                bank_descs[b_idx]
-            } else {
-                "Banco PRG"
-            };
+            let bank_name = format!("Banco PRG #{} (16 KB)", b_idx);
             let bank_start = b_idx * 16384;
             let bank_end = bank_start + 16384;
             let bank_slice = &self.prg_rom[bank_start..bank_end];
@@ -283,8 +274,8 @@ impl NgsProject {
                     b.copy_from_slice(chunk);
                     self.global_tiles.push(GlobalTile {
                         bytes: b,
-                        label: format!("{} — Tile #{:03X}", bank_name, t_in_b),
-                        category: bank_name.to_string(),
+                        label: format!("Banco PRG #{} — Tile #{:03X}", b_idx, t_in_b),
+                        category: bank_name.clone(),
                         scene_idx: 0,
                         tile_in_scene: t_in_b,
                         prg_offset: Some(bank_start + off),
