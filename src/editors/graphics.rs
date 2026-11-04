@@ -33,15 +33,15 @@ impl GraphicsEditorState {
 
     pub fn ui(&mut self, ctx: &egui::Context, ui: &mut egui::Ui, project: &mut NgsProject) {
         if !project.loaded {
-            ui.vertical_centered(|ui| {
-                ui.add_space(80.0);
-                ui.heading("Ningún proyecto abierto");
-                ui.add_space(8.0);
-                ui.label("Usa el menú superior:  Archivo  ->  Abrir Código .C / .ASM...  (o Abrir ROM .NES...)");
-                ui.label("para cargar un juego y descomprimir automáticamente sus mapas de bits y música.");
-            });
+            super::guide::welcome_ui(ui);
             return;
         }
+
+        super::guide::tab_hint(
+            ui,
+            "Elige una escena arriba → haz clic en un personaje (columna 1) o en un cuadro de la hoja (columna 2) \
+             → píntalo en la columna 3. Usa los botones BG/SP para cambiar los colores.",
+        );
 
         // Selector de Escena Descomprimida (Título, Nivel 1, o Avanzar el juego en vivo)
         ui.horizontal_wrapped(|ui| {

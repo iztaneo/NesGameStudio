@@ -29,6 +29,7 @@ struct NesGameStudioApp {
     jukebox: JukeboxEngine,
     subroutine_filter: String,
     show_about_modal: bool,
+    show_guide_window: bool,
     status_bar_msg: String,
 }
 
@@ -43,6 +44,7 @@ impl Default for NesGameStudioApp {
             jukebox: JukeboxEngine::new(),
             subroutine_filter: "TODAS".to_string(),
             show_about_modal: false,
+            show_guide_window: false,
             status_bar_msg: "Listo. Usa el menú Archivo -> Abrir Código .C / .ASM... para comenzar.".to_string(),
         }
     }
@@ -156,7 +158,7 @@ impl eframe::App for NesGameStudioApp {
                         .radio_value(
                             &mut self.active_tab,
                             ActiveTab::GraphicsGallery,
-                            "🎨 1. Galería de Mapas de Bits y Sprites HD",
+                            "🎨 Gráficos (personajes, escenarios y colores)",
                         )
                         .clicked()
                     {
@@ -166,7 +168,7 @@ impl eframe::App for NesGameStudioApp {
                         .radio_value(
                             &mut self.active_tab,
                             ActiveTab::AudioJukebox,
-                            "🎵 2. Rockola Aislada (Motor 6502 + APU Real)",
+                            "🎵 Rockola (música y efectos del juego)",
                         )
                         .clicked()
                     {
@@ -176,7 +178,7 @@ impl eframe::App for NesGameStudioApp {
                         .radio_value(
                             &mut self.active_tab,
                             ActiveTab::SubroutinesInspector,
-                            "🔍 3. Radiografía de Subrutinas (.ASM <-> .C)",
+                            "🔍 Código (rutinas .ASM / .C)",
                         )
                         .clicked()
                     {
@@ -209,31 +211,35 @@ impl eframe::App for NesGameStudioApp {
 
                 // 5. MENÚ AYUDA
                 ui.menu_button("Ayuda", |ui| {
+                    if ui.button("📖 Guía Rápida: ¿Cómo se usa?").clicked() {
+                        self.show_guide_window = true;
+                        ui.close_menu();
+                    }
                     if ui.button("ℹ Acerca de NesGameStudio").clicked() {
                         self.show_about_modal = true;
                         ui.close_menu();
                     }
                 });
 
+                // Indicador (no clicable) de la vista actual
                 ui.separator();
-                // Selector rápido de la vista actual en la misma barra de menú
-                ui.selectable_value(
-                    &mut self.active_tab,
-                    ActiveTab::GraphicsGallery,
-                    "🎨 Mapas de Bits",
-                );
-                ui.selectable_value(
-                    &mut self.active_tab,
-                    ActiveTab::AudioJukebox,
-                    "🎵 Rockola Real",
-                );
-                ui.selectable_value(
-                    &mut self.active_tab,
-                    ActiveTab::SubroutinesInspector,
-                    "🔍 Subrutinas",
-                );
+                let current = match self.active_tab {
+                    ActiveTab::GraphicsGallery => "Vista actual: 🎨 Gráficos",
+                    ActiveTab::AudioJukebox => "Vista actual: 🎵 Rockola",
+                    ActiveTab::SubroutinesInspector => "Vista actual: 🔍 Código",
+                };
+                ui.weak(current);
             });
         });
+
+        if self.show_guide_window {
+            let mut open = true;
+            egui::Window::new("Guía Rápida de NesGameStudio")
+                .open(&mut open)
+                .default_width(620.0)
+                .show(ctx, |ui| editors::guide::welcome_ui(ui));
+            self.show_guide_window = open;
+        }
 
         // BARRA DE ESTADO INFERIOR
         egui::TopBottomPanel::bottom("bottom_status").show(ctx, |ui| {
@@ -283,13 +289,13 @@ impl eframe::App for NesGameStudioApp {
 impl NesGameStudioApp {
     fn render_subroutines_tab(&mut self, ui: &mut egui::Ui) {
         if !self.project.loaded {
-            ui.vertical_centered(|ui| {
-                ui.add_space(80.0);
-                ui.heading("Ningún proyecto abierto");
-                ui.label("Usa el menú Archivo -> Abrir Código .C / .ASM... para inspeccionar subrutinas.");
-            });
+            editors::guide::welcome_ui(ui);
             return;
         }
+        editors::guide::tab_hint(
+            ui,
+            "Lista de rutinas del código del juego agrupadas por tipo. Despliega una para ver sus instrucciones.",
+        );
         ui.heading("🔍 Explorador de Subrutinas y Vectores (.ASM <-> .C)");
         ui.horizontal(|ui| {
             ui.label(format!(

@@ -20,7 +20,11 @@ pub fn load_c_and_asm_into_project(c_path: &Path, project: &mut NgsProject) -> R
     project.modified_tiles.clear();
 
     project.mapper_id = parse_define_u16(&raw_c, "#define MAPPER_ID").unwrap_or(0) as u8;
-    project.mirroring_mode = parse_define_u16(&raw_c, "#define MIRRORING_MODE").unwrap_or(0) as u8;
+    // NesEmuRust exporta: `static uint8_t NAMETABLE_MIRRORING = 1; /* 0=Horizontal, 1=Vertical */`
+    project.mirroring_mode = parse_assignment_u8(&raw_c, "NAMETABLE_MIRRORING")
+        .or_else(|| parse_define_u16(&raw_c, "#define MIRRORING_MODE").map(|v| v as u8))
+        .unwrap_or(0)
+        & 1;
     project.vec_nmi = parse_define_u16(&raw_c, "#define VEC_NMI").unwrap_or(0x8000);
     project.vec_reset = parse_define_u16(&raw_c, "#define VEC_RESET").unwrap_or(0x8000);
     project.vec_irq = parse_define_u16(&raw_c, "#define VEC_IRQ").unwrap_or(0x8000);
@@ -30,6 +34,15 @@ pub fn load_c_and_asm_into_project(c_path: &Path, project: &mut NgsProject) -> R
 
     if project.prg_rom.is_empty() {
         return Err("El archivo .C seleccionado no contiene un arreglo PRG_ROM[] válido.".to_string());
+    }
+    if let Some(expected) = parse_define_usize(&raw_c, "#define PRG_ROM_SIZE").filter(|v| *v > 0) {
+        if project.prg_rom.len() != expected {
+            return Err(format!(
+                "PRG_ROM[] leído con {} bytes pero el archivo declara {} bytes.",
+                project.prg_rom.len(),
+                expected
+            ));
+        }
     }
 
     let non_zero_chr = project.chr_mem.iter().filter(|&&b| b != 0).count();
@@ -325,6 +338,42 @@ fn extract_subroutines_from_c(raw_c: &str, project: &mut NgsProject) {
     }
 }
 
+fn parse_define_usize(src: &str, prefix: &str) -> Option<usize> {
+    src.lines()
+        .find_map(|l| l.trim().strip_prefix(prefix).map(|r| r.trim().to_string()))
+        .and_then(|v| {
+            let tok = v.split_whitespace().next()?.to_string();
+            match tok.strip_prefix("0x").or_else(|| tok.strip_prefix("0X")) {
+                Some(h) => usize::from_str_radix(h, 16).ok(),
+                None => tok.parse::<usize>().ok(),
+            }
+        })
+}
+
+fn parse_assignment_u8(src: &str, var_name: &str) -> Option<u8> {
+    for line in src.lines() {
+        let t = line.trim();
+        if t.starts_with('*') || t.starts_with("//") || t.starts_with("/*") {
+            continue;
+        }
+        if let Some(pos) = t.find(var_name) {
+            let after = &t[pos + var_name.len()..];
+            if let Some(eq) = after.find('=') {
+                let val: String = after[eq + 1..]
+                    .trim()
+                    .chars()
+                    .take_while(|c| c.is_ascii_hexdigit() || *c == 'x' || *c == 'X')
+                    .collect();
+                if let Some(hex) = val.strip_prefix("0x").or_else(|| val.strip_prefix("0X")) {
+                    return u8::from_str_radix(hex, 16).ok();
+                }
+                return val.parse::<u8>().ok();
+            }
+        }
+    }
+    None
+}
+
 fn parse_define_u16(src: &str, prefix: &str) -> Option<u16> {
     for line in src.lines() {
         let t = line.trim();
@@ -340,8 +389,25 @@ fn parse_define_u16(src: &str, prefix: &str) -> Option<u16> {
     None
 }
 
+/// Localiza la DECLARACIÓN real del arreglo (ej. `uint8_t PRG_ROM[PRG_ROM_SIZE] = {`),
+/// ignorando menciones en comentarios, y extrae sus bytes descartando los comentarios de offset `/* 0x00010 */`.
 fn extract_c_byte_array(src: &str, marker: &str) -> Vec<u8> {
-    let Some(start_pos) = src.find(marker) else {
+    let mut search_from = 0usize;
+    let mut decl_pos = None;
+    while let Some(rel) = src[search_from..].find(marker) {
+        let abs = search_from + rel;
+        let line_start = src[..abs].rfind('\n').map(|p| p + 1).unwrap_or(0);
+        let line_end = src[abs..].find('\n').map(|p| abs + p).unwrap_or(src.len());
+        let line = &src[line_start..line_end];
+        let trimmed = line.trim_start();
+        let is_comment = trimmed.starts_with('*') || trimmed.starts_with("/*") || trimmed.starts_with("//");
+        if !is_comment && line.contains("uint8_t") && line.contains('=') && line.contains('{') {
+            decl_pos = Some(abs);
+            break;
+        }
+        search_from = abs + marker.len();
+    }
+    let Some(start_pos) = decl_pos else {
         return Vec::new();
     };
     let after_marker = &src[start_pos..];
@@ -352,7 +418,22 @@ fn extract_c_byte_array(src: &str, marker: &str) -> Vec<u8> {
     let Some(close_brace) = after_brace.find("};") else {
         return Vec::new();
     };
-    let body = &after_brace[..close_brace];
+    let raw_body = &after_brace[..close_brace];
+
+    // Eliminar comentarios /* ... */ (offsets de fila) para no confundirlos con bytes
+    let mut body = String::with_capacity(raw_body.len());
+    let mut rest = raw_body;
+    while let Some(c_start) = rest.find("/*") {
+        body.push_str(&rest[..c_start]);
+        match rest[c_start + 2..].find("*/") {
+            Some(c_end) => rest = &rest[c_start + 2 + c_end + 2..],
+            None => {
+                rest = "";
+                break;
+            }
+        }
+    }
+    body.push_str(rest);
 
     let mut bytes = Vec::with_capacity(65536);
     for token in body.split(|c: char| c == ',' || c.is_whitespace()) {

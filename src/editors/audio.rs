@@ -19,15 +19,15 @@ impl Default for AudioEditorState {
 impl AudioEditorState {
     pub fn ui(&mut self, ui: &mut egui::Ui, project: &mut NgsProject, jukebox: &mut JukeboxEngine) {
         if !project.loaded {
-            ui.vertical_centered(|ui| {
-                ui.add_space(80.0);
-                ui.heading("Ningún proyecto abierto");
-                ui.add_space(8.0);
-                ui.label("Usa el menú superior:  Archivo  ->  Abrir Código .C / .ASM...  (o Abrir ROM .NES...)");
-                ui.label("para activar la Rockola con el motor de sonido 6502 + APU real del juego.");
-            });
+            super::guide::welcome_ui(ui);
             return;
         }
+
+        super::guide::tab_hint(
+            ui,
+            "Haz clic en una escena para oír su canción real. Marca Mute para silenciar un instrumento o Solo para \
+             oír sólo ese. Los botones #01..#28 prueban otros sonidos del juego.",
+        );
 
         ui.columns(2, |cols| {
             // COLUMNA IZQUIERDA: Pistas Reales Capturadas del Juego + Disparador de IDs del Motor 6502
