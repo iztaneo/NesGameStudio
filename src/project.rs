@@ -99,6 +99,7 @@ pub struct NgsProject {
     pub modified_tiles: HashMap<usize, [u8; 16]>,
     pub hd_sprites: HashMap<usize, HdSpriteBinding>,
     pub audio_replacements: HashMap<u8, AudioReplacement>,
+    pub audio_track_states: HashMap<u8, Vec<u8>>,
     pub subroutines: Vec<SubroutineInfo>,
     pub palettes: [[u8; 4]; 8],
     pub selected_palette: usize,
@@ -129,6 +130,7 @@ impl Default for NgsProject {
             modified_tiles: HashMap::new(),
             hd_sprites: HashMap::new(),
             audio_replacements: HashMap::new(),
+            audio_track_states: HashMap::new(),
             subroutines: Vec::new(),
             palettes: [
                 [0x0F, 0x16, 0x27, 0x30], // 0: Paleta Cálida / Rojos

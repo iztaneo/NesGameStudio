@@ -1,6 +1,7 @@
 use crate::project::{AudioReplacement, NgsProject};
 use crate::runtime::jukebox_apu::JukeboxEngine;
 use eframe::egui::{self, Color32, Pos2, Sense, Stroke, Vec2};
+use nes_emu_rust::controller::JoypadButtons;
 use std::collections::HashMap;
 
 #[derive(Clone, Debug)]
@@ -122,14 +123,16 @@ impl AudioEditorState {
 
         super::guide::tab_hint(
             ui,
-            "Selecciona cualquier pista o efecto de la lista para escucharlo al instante. \
-             Puedes aislar instrumentos con Mute/Solo, probar IDs de sonido personalizados o reemplazar la música por tu propio archivo .MP3 / .WAV.",
+            "Selecciona cualquier pista de la lista para escucharla. Puedes controlar el juego en vivo para navegar a cualquier canción, \
+             aislar canales con Mute/Solo, memorizar cualquier melodía con un clic o vincular archivos .MP3/.WAV.",
         );
 
         let tracks = get_tracks_for_game(&project.game_title);
 
         ui.columns(2, |cols| {
-            // COLUMNA IZQUIERDA: Lista Completa de Pistas del Juego (BGM y SFX)
+            // =========================================================================
+            // COLUMNA IZQUIERDA: Lista de Pistas (BGM y SFX) y Reemplazos
+            // =========================================================================
             cols[0].group(|ui| {
                 ui.horizontal(|ui| {
                     ui.heading("🎵 Lista de Pistas del Juego");
@@ -141,10 +144,15 @@ impl AudioEditorState {
                         jukebox.playing = !jukebox.playing;
                         if jukebox.playing {
                             jukebox.trigger_game_sound_id(project, self.selected_track);
+                            self.status_msg = format!("Reproduciendo Pista #{:02X}...", self.selected_track);
+                        } else {
+                            jukebox.stop_external_file();
                         }
                     }
                     if ui.button("⏹ Detener").clicked() {
                         jukebox.playing = false;
+                        jukebox.stop_external_file();
+                        self.status_msg = "Reproducción detenida.".to_string();
                     }
                     if ui.button("💾 Grabar a .WAV").clicked() {
                         if let Some(path) = rfd::FileDialog::new()
@@ -168,7 +176,7 @@ impl AudioEditorState {
                     if ui.button("▶ Probar ID").clicked() {
                         self.selected_track = self.custom_test_id;
                         jukebox.trigger_game_sound_id(project, self.custom_test_id);
-                        self.status_msg = format!("Reproduciendo comando ID #{:02X}", self.custom_test_id);
+                        self.status_msg = format!("Probando comando ID #{:02X}", self.custom_test_id);
                     }
                 });
 
@@ -184,6 +192,8 @@ impl AudioEditorState {
 
                             let label = if has_rep {
                                 format!("🔁 {} [REEMPLAZADA POR MP3/WAV]", title)
+                            } else if project.audio_track_states.contains_key(&track.id) {
+                                format!("📌 {} [MEMORIZADA]", title)
                             } else {
                                 title.clone()
                             };
@@ -205,6 +215,8 @@ impl AudioEditorState {
 
                             let label = if has_rep {
                                 format!("🔁 {} [REEMPLAZADO]", title)
+                            } else if project.audio_track_states.contains_key(&track.id) {
+                                format!("📌 {} [MEMORIZADO]", title)
                             } else {
                                 title.clone()
                             };
@@ -250,7 +262,7 @@ impl AudioEditorState {
                 ui.add_space(4.0);
                 ui.label(
                     egui::RichText::new(format!(
-                        "🔁 Reemplazar la Pista Seleccionada (#{0:02X}) por música .MP3 o sonido .WAV:",
+                        "🔁 Reemplazar Pista Seleccionada (#{0:02X}) por archivo .MP3 / .WAV:",
                         self.selected_track
                     ))
                     .strong(),
@@ -295,6 +307,7 @@ impl AudioEditorState {
                     if project.audio_replacements.contains_key(&self.selected_track) {
                         if ui.button("🗑 Quitar reemplazo").clicked() {
                             project.audio_replacements.remove(&self.selected_track);
+                            jukebox.stop_external_file();
                             self.status_msg = "Reemplazo eliminado.".to_string();
                         }
                     }
@@ -308,10 +321,24 @@ impl AudioEditorState {
                 }
             });
 
-            // COLUMNA DERECHA: Mezclador de 5 Canales APU (Mute / Solo en Vivo) y Osciloscopio
+            // =========================================================================
+            // COLUMNA DERECHA: Mezclador 5 Canales APU, Escucha en Vivo y Memorizador
+            // =========================================================================
             cols[1].group(|ui| {
                 ui.heading("🎛️ Mezclador de Canales de Sonido (Solo / Mute)");
-                ui.label("Puedes apagar o aislar canales para escuchar cómo está compuesta la música:");
+
+                // Indicador de salida física de hardware
+                let dev_name = jukebox.audio_out.active_device_name();
+                let rate = jukebox.audio_out.sample_rate();
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("🔊 Salida:").strong());
+                    ui.label(format!("{} ({} Hz)", dev_name, rate));
+                    if jukebox.playing {
+                        ui.colored_label(Color32::from_rgb(80, 240, 140), "● Activo");
+                    } else {
+                        ui.colored_label(Color32::LIGHT_GRAY, "○ Pausado");
+                    }
+                });
                 ui.add_space(4.0);
 
                 let ch_names = [
@@ -332,7 +359,7 @@ impl AudioEditorState {
 
                 ui.add_space(8.0);
                 ui.label(egui::RichText::new("Osciloscopio en Tiempo Real:").strong());
-                let (o_rect, _) = ui.allocate_exact_size(Vec2::new(380.0, 110.0), Sense::hover());
+                let (o_rect, _) = ui.allocate_exact_size(Vec2::new(380.0, 95.0), Sense::hover());
                 let painter = ui.painter_at(o_rect);
                 painter.rect_filled(o_rect, 3.0, Color32::from_rgb(10, 14, 20));
 
@@ -344,6 +371,70 @@ impl AudioEditorState {
                     pts.push(Pos2::new(x, y));
                 }
                 painter.add(egui::Shape::line(pts, Stroke::new(2.0, Color32::from_rgb(0, 230, 180))));
+
+                ui.separator();
+                // Panel de Control en Vivo y Memorizador de Canciones
+                ui.heading("🎮 Control en Vivo (Navega a cualquier fase o sonido)");
+                ui.label(
+                    egui::RichText::new("Usa los botones para avanzar la pantalla, jugar y llegar a la música que quieras:")
+                        .small()
+                        .color(Color32::LIGHT_GRAY),
+                );
+                ui.add_space(4.0);
+
+                ui.horizontal(|ui| {
+                    if ui.button("▶ START").clicked() {
+                        project.nes_live.set_controller1(JoypadButtons::START);
+                        for _ in 0..8 {
+                            project.nes_live.step_frame();
+                        }
+                        project.nes_live.set_controller1(JoypadButtons::empty());
+                        jukebox.playing = true;
+                    }
+                    if ui.button("SELECT").clicked() {
+                        project.nes_live.set_controller1(JoypadButtons::SELECT);
+                        for _ in 0..8 {
+                            project.nes_live.step_frame();
+                        }
+                        project.nes_live.set_controller1(JoypadButtons::empty());
+                        jukebox.playing = true;
+                    }
+                    if ui.button("A (Saltar)").clicked() {
+                        project.nes_live.set_controller1(JoypadButtons::BUTTON_A);
+                        for _ in 0..8 {
+                            project.nes_live.step_frame();
+                        }
+                        project.nes_live.set_controller1(JoypadButtons::empty());
+                        jukebox.playing = true;
+                    }
+                    if ui.button("B (Disparo)").clicked() {
+                        project.nes_live.set_controller1(JoypadButtons::BUTTON_B);
+                        for _ in 0..8 {
+                            project.nes_live.step_frame();
+                        }
+                        project.nes_live.set_controller1(JoypadButtons::empty());
+                        jukebox.playing = true;
+                    }
+                    if ui.button("🔄 Reiniciar").clicked() {
+                        project.nes_live.reset();
+                        jukebox.playing = true;
+                        self.status_msg = "Juego reiniciado a la pantalla de título.".to_string();
+                    }
+                });
+
+                ui.add_space(6.0);
+                if ui.button(
+                    egui::RichText::new(format!(
+                        "📌 Memorizar esta música exacta en la Pista #{:02X}",
+                        self.selected_track
+                    ))
+                    .strong()
+                    .color(Color32::from_rgb(180, 240, 255)),
+                ).clicked() {
+                    let state = project.nes_live.to_save_state_bytes();
+                    project.audio_track_states.insert(self.selected_track, state);
+                    self.status_msg = format!("¡Pista #{:02X} memorizada con el estado de sonido actual!", self.selected_track);
+                }
 
                 ui.add_space(6.0);
                 if !self.status_msg.is_empty() {
