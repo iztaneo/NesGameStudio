@@ -57,23 +57,54 @@ pub fn generate_modified_c_file(project: &NgsProject) -> Result<PathBuf, String>
     }
 
     // 3. Si hay pistas .MP3 / .WAV de reemplazo configuradas en la Rockola, iniciar reproducción MCI
-    for (&track_id, rep) in &project.audio_replacements {
-        let escaped_path = rep.external_file_path.replace('\\', "\\\\");
-        if rep.is_sfx_wav {
-            patch_block.push_str(&format!(
-                "    /* {} (ID #{:02X}) vinculado a WAV: {} */\n",
-                rep.label, rep.track_id.max(track_id), escaped_path
-            ));
-        } else {
-            patch_block.push_str(&format!(
-                "    /* {} (ID #{:02X}) */\n    mciSendStringA(\"open \\\"{}\\\" type mpegvideo alias ngs_bgm_{:02X}\", NULL, 0, NULL);\n",
-                rep.label, rep.track_id.max(track_id), escaped_path, track_id
-            ));
-            if track_id == 0 {
+    if !project.audio_event_replacements.is_empty() {
+        let mut sorted_reps: Vec<_> = project.audio_event_replacements.iter().collect();
+        sorted_reps.sort_by_key(|(k, _)| (k.trigger.short_label(), k.command_id));
+        for (idx, (event_key, rep)) in sorted_reps.into_iter().enumerate() {
+            let escaped_path = rep.external_file_path.replace('\\', "\\\\");
+            let alias_id = format!("{}_{:02X}", idx, event_key.command_id);
+            if rep.is_sfx_wav {
                 patch_block.push_str(&format!(
-                    "    mciSendStringA(\"play ngs_bgm_{:02X} repeat\", NULL, 0, NULL);\n",
-                    track_id
+                    "    /* {} [{}] vinculado a WAV: {} */\n",
+                    rep.label,
+                    event_key.short_label(),
+                    escaped_path
                 ));
+            } else {
+                patch_block.push_str(&format!(
+                    "    /* {} [{}] */\n    mciSendStringA(\"open \\\"{}\\\" type mpegvideo alias ngs_bgm_{}\", NULL, 0, NULL);\n",
+                    rep.label,
+                    event_key.short_label(),
+                    escaped_path,
+                    alias_id
+                ));
+                if event_key.command_id == 0 {
+                    patch_block.push_str(&format!(
+                        "    mciSendStringA(\"play ngs_bgm_{} repeat\", NULL, 0, NULL);\n",
+                        alias_id
+                    ));
+                }
+            }
+        }
+    } else {
+        for (&track_id, rep) in &project.audio_replacements {
+            let escaped_path = rep.external_file_path.replace('\\', "\\\\");
+            if rep.is_sfx_wav {
+                patch_block.push_str(&format!(
+                    "    /* {} (ID #{:02X}) vinculado a WAV: {} */\n",
+                    rep.label, rep.track_id.max(track_id), escaped_path
+                ));
+            } else {
+                patch_block.push_str(&format!(
+                    "    /* {} (ID #{:02X}) */\n    mciSendStringA(\"open \\\"{}\\\" type mpegvideo alias ngs_bgm_{:02X}\", NULL, 0, NULL);\n",
+                    rep.label, rep.track_id.max(track_id), escaped_path, track_id
+                ));
+                if track_id == 0 {
+                    patch_block.push_str(&format!(
+                        "    mciSendStringA(\"play ngs_bgm_{:02X} repeat\", NULL, 0, NULL);\n",
+                        track_id
+                    ));
+                }
             }
         }
     }

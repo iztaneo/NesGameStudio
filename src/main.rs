@@ -149,6 +149,7 @@ impl eframe::App for NesGameStudioApp {
                     }
                     if ui.button("🧹 Limpiar Reemplazos de Audio (.MP3/.WAV)").clicked() {
                         self.project.audio_replacements.clear();
+                        self.project.audio_event_replacements.clear();
                         self.status_bar_msg = "Se limpiaron los reemplazos de audio.".to_string();
                         ui.close_menu();
                     }

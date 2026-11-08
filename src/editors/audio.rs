@@ -1,23 +1,27 @@
-use crate::project::{AudioReplacement, NgsProject};
+use crate::project::{AudioEventKey, AudioEventKind, AudioReplacement, NgsProject};
 use crate::runtime::jukebox_apu::JukeboxEngine;
 use eframe::egui::{self, Color32, Pos2, Sense, Stroke, Vec2};
 use nes_emu_rust::controller::JoypadButtons;
 use std::collections::HashMap;
 
 pub struct AudioEditorState {
+    pub selected_event_key: Option<AudioEventKey>,
     pub selected_track: u8,
     pub custom_test_id: u8,
+    pub custom_trigger_idx: usize,
     pub rename_buf: String,
     pub is_renaming: bool,
-    pub user_track_names: HashMap<u8, String>,
+    pub user_track_names: HashMap<AudioEventKey, String>,
     pub status_msg: String,
 }
 
 impl Default for AudioEditorState {
     fn default() -> Self {
         Self {
+            selected_event_key: None,
             selected_track: 1,
             custom_test_id: 1,
+            custom_trigger_idx: 0,
             rename_buf: String::new(),
             is_renaming: false,
             user_track_names: HashMap::new(),
@@ -35,27 +39,37 @@ impl AudioEditorState {
 
         super::guide::tab_hint(
             ui,
-            "Selecciona cualquier pista de la lista para escucharla. Puedes controlar el juego en vivo para navegar a cualquier canción, \
-             aislar canales con Mute/Solo, memorizar cualquier melodía con un clic o vincular archivos .MP3/.WAV.",
+            "Selecciona cualquier pista o efecto de la lista para escucharlo de forma aislada. Cada evento se identifica por su \
+             Trigger + Comando + Contexto. Puedes reclasificar eventos, aislar canales con Mute/Solo o vincular archivos .MP3/.WAV.",
         );
 
         if project.discovered_tracks.is_empty() {
             crate::runtime::jukebox_apu::detect_or_discover_audio_engine(project);
         }
-        if !project.discovered_tracks.iter().any(|t| t.id == self.selected_track) {
+        let valid_sel = self
+            .selected_event_key
+            .as_ref()
+            .map(|k| project.discovered_tracks.iter().any(|t| &t.key == k))
+            .unwrap_or(false);
+        if !valid_sel {
             if let Some(first) = project.discovered_tracks.first() {
+                self.selected_event_key = Some(first.key.clone());
                 self.selected_track = first.id;
             }
         }
         let tracks = project.discovered_tracks.clone();
+        let active_key = self
+            .selected_event_key
+            .clone()
+            .unwrap_or_else(|| AudioEventKey::new(project.sound_trigger.clone(), self.selected_track));
 
         ui.columns(2, |cols| {
             // =========================================================================
-            // COLUMNA IZQUIERDA: Lista de Pistas (BGM y SFX) y Reemplazos
+            // COLUMNA IZQUIERDA: Catálogo de Eventos de Audio (Música, SFX, Fanfarrias, Control, Sin clasificar)
             // =========================================================================
             cols[0].group(|ui| {
                 ui.horizontal(|ui| {
-                    ui.heading("🎵 Lista de Pistas del Juego");
+                    ui.heading("🎵 Catálogo de Audio (Multitrigger)");
                     ui.separator();
                     if ui
                         .button(if jukebox.playing { "⏸ Pausar" } else { "▶ Reproducir" })
@@ -63,8 +77,16 @@ impl AudioEditorState {
                     {
                         jukebox.playing = !jukebox.playing;
                         if jukebox.playing {
-                            jukebox.trigger_game_sound_id(project, self.selected_track);
-                            self.status_msg = format!("Reproduciendo Pista #{:02X}...", self.selected_track);
+                            jukebox.trigger_audio_event(project, &active_key);
+                            self.status_msg = format!(
+                                "Reproduciendo {} ({})...",
+                                active_key.short_label(),
+                                if jukebox.last_playback_confirmed_audible {
+                                    "Audio APU confirmado"
+                                } else {
+                                    "Sin actividad inicial"
+                                }
+                            );
                         } else {
                             jukebox.stop_external_file();
                         }
@@ -76,12 +98,15 @@ impl AudioEditorState {
                     }
                     if ui.button("💾 Grabar a .WAV").clicked() {
                         if let Some(path) = rfd::FileDialog::new()
-                            .set_file_name(&format!("{}_pista_{:02X}.wav", project.game_title, self.selected_track))
+                            .set_file_name(&format!(
+                                "{}_evento_{:02X}.wav",
+                                project.game_title, active_key.command_id
+                            ))
                             .add_filter("Audio WAV", &["wav"])
                             .save_file()
                         {
                             match jukebox.export_real_nes_audio_to_wav(project, &path) {
-                                Ok(_) => self.status_msg = format!("Pista grabada en {}", path.display()),
+                                Ok(_) => self.status_msg = format!("Evento grabado en {}", path.display()),
                                 Err(e) => self.status_msg = format!("Error al exportar: {}", e),
                             }
                         }
@@ -89,101 +114,225 @@ impl AudioEditorState {
                 });
 
                 ui.add_space(4.0);
-                // Control para probar cualquier ID de sonido directo (0x00 .. 0xFF)
+                // Control para probar cualquier ID de sonido directo sobre cualquiera de los triggers registrados
                 ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("Probar ID libre:").small());
-                    ui.add(egui::DragValue::new(&mut self.custom_test_id).range(0..=255).hexadecimal(2, false, true));
-                    if ui.button("▶ Probar ID").clicked() {
+                    ui.label(egui::RichText::new("Probar comando:").small());
+                    if !project.audio_triggers.is_empty() {
+                        if self.custom_trigger_idx >= project.audio_triggers.len() {
+                            self.custom_trigger_idx = 0;
+                        }
+                        egui::ComboBox::from_id_salt("trigger_selector_combo")
+                            .selected_text(project.audio_triggers[self.custom_trigger_idx].short_label())
+                            .show_ui(ui, |ui| {
+                                for (idx, trig) in project.audio_triggers.iter().enumerate() {
+                                    ui.selectable_value(
+                                        &mut self.custom_trigger_idx,
+                                        idx,
+                                        trig.short_label(),
+                                    );
+                                }
+                            });
+                    }
+                    ui.add(
+                        egui::DragValue::new(&mut self.custom_test_id)
+                            .range(0..=255)
+                            .hexadecimal(2, false, true),
+                    );
+                    if ui.button("▶ Probar").clicked() {
+                        let trig = project
+                            .audio_triggers
+                            .get(self.custom_trigger_idx)
+                            .cloned()
+                            .unwrap_or_else(|| project.sound_trigger.clone());
+                        let test_key = AudioEventKey::new(trig, self.custom_test_id);
+                        self.selected_event_key = Some(test_key.clone());
                         self.selected_track = self.custom_test_id;
-                        jukebox.trigger_game_sound_id(project, self.custom_test_id);
-                        self.status_msg = format!("Probando comando ID #{:02X}", self.custom_test_id);
+                        jukebox.trigger_audio_event(project, &test_key);
+                        self.status_msg = format!(
+                            "Probando {} -> {}",
+                            test_key.short_label(),
+                            if jukebox.last_playback_confirmed_audible {
+                                "Audio activo"
+                            } else {
+                                "Silencioso / Control"
+                            }
+                        );
                     }
                 });
 
                 ui.add_space(4.0);
+                let sections = [
+                    (
+                        AudioEventKind::Music,
+                        "🎶 MÚSICA (BGM):",
+                        Color32::from_rgb(180, 220, 255),
+                    ),
+                    (
+                        AudioEventKind::Sfx,
+                        "💥 EFECTOS DE SONIDO (SFX):",
+                        Color32::from_rgb(255, 200, 140),
+                    ),
+                    (
+                        AudioEventKind::Fanfare,
+                        "🎺 FANFARRIAS / CORTINILLAS:",
+                        Color32::from_rgb(255, 230, 130),
+                    ),
+                    (
+                        AudioEventKind::Control,
+                        "🎛 COMANDOS DE CONTROL:",
+                        Color32::from_rgb(190, 190, 210),
+                    ),
+                    (
+                        AudioEventKind::Unknown,
+                        "❓ SIN CLASIFICAR:",
+                        Color32::from_rgb(180, 180, 180),
+                    ),
+                ];
+
                 egui::ScrollArea::vertical()
-                    .max_height(340.0)
+                    .max_height(315.0)
                     .show(ui, |ui| {
-                        ui.label(egui::RichText::new("🎶 TEMAS MUSICALES (BGM):").strong().color(Color32::from_rgb(180, 220, 255)));
-                        for track in tracks.iter().filter(|t| t.is_music) {
-                            let is_sel = self.selected_track == track.id;
-                            let has_rep = project.audio_replacements.contains_key(&track.id);
-                            let title = self.user_track_names.get(&track.id).unwrap_or(&track.title);
-
-                            let label = if has_rep {
-                                format!("🔁 {} [REEMPLAZADA POR MP3/WAV]", title)
-                            } else if project.audio_track_states.contains_key(&track.id) {
-                                format!("📌 {} [MEMORIZADA]", title)
-                            } else {
-                                title.clone()
-                            };
-
-                            let resp = ui.selectable_label(is_sel, label);
-                            if resp.clicked() {
-                                self.selected_track = track.id;
-                                jukebox.trigger_game_sound_id(project, track.id);
-                                self.status_msg = format!("Reproduciendo: {}", title);
+                        for (section_kind, heading, color) in &sections {
+                            let matching: Vec<_> = tracks
+                                .iter()
+                                .filter(|t| &t.kind == section_kind)
+                                .collect();
+                            if matching.is_empty() {
+                                continue;
                             }
-                        }
+                            ui.add_space(4.0);
+                            ui.label(
+                                egui::RichText::new(format!("{} ({})", heading, matching.len()))
+                                    .strong()
+                                    .color(*color),
+                            );
+                            for track in matching {
+                                let is_sel = self.selected_event_key.as_ref() == Some(&track.key);
+                                let has_rep = project.get_event_replacement(&track.key).is_some();
+                                let has_state = project.get_event_state(&track.key).is_some();
+                                let title = self
+                                    .user_track_names
+                                    .get(&track.key)
+                                    .unwrap_or(&track.title);
 
-                        ui.add_space(8.0);
-                        ui.label(egui::RichText::new("💥 EFECTOS DE SONIDO (SFX):").strong().color(Color32::from_rgb(255, 200, 140)));
-                        for track in tracks.iter().filter(|t| !t.is_music) {
-                            let is_sel = self.selected_track == track.id;
-                            let has_rep = project.audio_replacements.contains_key(&track.id);
-                            let title = self.user_track_names.get(&track.id).unwrap_or(&track.title);
+                                let mut meta_tags = Vec::new();
+                                meta_tags.push(track.key.trigger.short_label());
+                                meta_tags.push(format!(
+                                    "{} {:.0}%",
+                                    track.status.label(),
+                                    track.confidence * 100.0
+                                ));
+                                if track.approx_frames > 0 {
+                                    meta_tags.push(format!("{:.1}s", track.approx_frames as f32 / 60.0));
+                                }
+                                let ch_badge = track.channels_badge();
+                                if ch_badge != "-" {
+                                    meta_tags.push(ch_badge);
+                                }
 
-                            let label = if has_rep {
-                                format!("🔁 {} [REEMPLAZADO]", title)
-                            } else if project.audio_track_states.contains_key(&track.id) {
-                                format!("📌 {} [MEMORIZADO]", title)
-                            } else {
-                                title.clone()
-                            };
+                                let prefix = if has_rep {
+                                    "🔁 "
+                                } else if has_state {
+                                    "📌 "
+                                } else {
+                                    ""
+                                };
 
-                            let resp = ui.selectable_label(is_sel, label);
-                            if resp.clicked() {
-                                self.selected_track = track.id;
-                                jukebox.trigger_game_sound_id(project, track.id);
-                                self.status_msg = format!("Reproduciendo: {}", title);
+                                let label = format!(
+                                    "{}{}  [{}]",
+                                    prefix,
+                                    title,
+                                    meta_tags.join(" | ")
+                                );
+
+                                let resp = ui.selectable_label(is_sel, label);
+                                if resp.clicked() {
+                                    self.selected_event_key = Some(track.key.clone());
+                                    self.selected_track = track.id;
+                                    jukebox.trigger_audio_event(project, &track.key);
+                                    self.status_msg = format!(
+                                        "Reproduciendo: {} ({}) — {}",
+                                        title,
+                                        track.key.short_label(),
+                                        if jukebox.last_playback_confirmed_audible {
+                                            "Audio APU confirmado"
+                                        } else {
+                                            "Sin salida audible inicial"
+                                        }
+                                    );
+                                }
                             }
                         }
                     });
 
                 ui.separator();
-                // Renombrar la pista seleccionada
-                let current_title = self.user_track_names.get(&self.selected_track)
+                // Metadatos y reclasificación manual del evento seleccionado
+                let current_title = self
+                    .user_track_names
+                    .get(&active_key)
                     .cloned()
                     .unwrap_or_else(|| {
-                        tracks.iter()
-                            .find(|t| t.id == self.selected_track)
+                        tracks
+                            .iter()
+                            .find(|t| t.key == active_key)
                             .map(|t| t.title.clone())
-                            .unwrap_or_else(|| format!("Pista #{:02X}", self.selected_track))
+                            .unwrap_or_else(|| format!("Evento {}", active_key.short_label()))
                     });
+
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new(format!("Clave: {}", active_key.short_label()))
+                            .small()
+                            .color(Color32::from_rgb(160, 210, 255)),
+                    );
+                    ui.separator();
+                    ui.label(egui::RichText::new("Reclasificar como:").small());
+                    for target_kind in [
+                        AudioEventKind::Music,
+                        AudioEventKind::Sfx,
+                        AudioEventKind::Fanfare,
+                        AudioEventKind::Control,
+                    ] {
+                        if ui.small_button(target_kind.label()).clicked() {
+                            if let Some(t) = project
+                                .discovered_tracks
+                                .iter_mut()
+                                .find(|t| t.key == active_key)
+                            {
+                                t.set_kind(target_kind.clone());
+                                t.status = crate::project::AudioValidationStatus::Confirmed;
+                                self.status_msg = format!(
+                                    "Evento {} reclasificado como {}.",
+                                    active_key.short_label(),
+                                    target_kind.label()
+                                );
+                            }
+                        }
+                    }
+                });
 
                 ui.horizontal(|ui| {
                     if self.is_renaming {
                         ui.text_edit_singleline(&mut self.rename_buf);
                         if ui.button("✔ Guardar Nombre").clicked() {
-                            self.user_track_names.insert(self.selected_track, self.rename_buf.clone());
+                            self.user_track_names
+                                .insert(active_key.clone(), self.rename_buf.clone());
                             self.is_renaming = false;
                         }
                         if ui.button("✖ Cancelar").clicked() {
                             self.is_renaming = false;
                         }
-                    } else {
-                        if ui.button("✏️ Renombrar esta Pista").clicked() {
-                            self.is_renaming = true;
-                            self.rename_buf = current_title.clone();
-                        }
+                    } else if ui.button("✏️ Renombrar este Evento").clicked() {
+                        self.is_renaming = true;
+                        self.rename_buf = current_title.clone();
                     }
                 });
 
                 ui.add_space(4.0);
                 ui.label(
                     egui::RichText::new(format!(
-                        "🔁 Reemplazar Pista Seleccionada (#{0:02X}) por archivo .MP3 / .WAV:",
-                        self.selected_track
+                        "🔁 Reemplazar Evento ({}) por archivo .MP3 / .WAV:",
+                        active_key.short_label()
                     ))
                     .strong(),
                 );
@@ -199,41 +348,33 @@ impl AudioEditorState {
                                 .map(|s| s.eq_ignore_ascii_case("wav"))
                                 .unwrap_or(false);
 
-                            let track_name = self.user_track_names.get(&self.selected_track)
-                                .cloned()
-                                .unwrap_or_else(|| {
-                                    tracks.iter()
-                                        .find(|t| t.id == self.selected_track)
-                                        .map(|t| t.title.clone())
-                                        .unwrap_or_else(|| format!("Pista #{:02X}", self.selected_track))
-                                });
-
-                            project.audio_replacements.insert(
-                                self.selected_track,
+                            project.set_event_replacement(
+                                active_key.clone(),
                                 AudioReplacement {
-                                    track_id: self.selected_track,
-                                    label: track_name,
+                                    event_key: Some(active_key.clone()),
+                                    track_id: active_key.command_id,
+                                    label: current_title.clone(),
                                     external_file_path: path.display().to_string(),
                                     is_sfx_wav: is_wav,
                                 },
                             );
                             self.status_msg = format!(
-                                "Pista #{:02X} vinculada a '{}'",
-                                self.selected_track,
+                                "Evento {} vinculado a '{}'",
+                                active_key.short_label(),
                                 path.display()
                             );
                         }
                     }
-                    if project.audio_replacements.contains_key(&self.selected_track) {
+                    if project.get_event_replacement(&active_key).is_some() {
                         if ui.button("🗑 Quitar reemplazo").clicked() {
-                            project.audio_replacements.remove(&self.selected_track);
+                            project.remove_event_replacement(&active_key);
                             jukebox.stop_external_file();
                             self.status_msg = "Reemplazo eliminado.".to_string();
                         }
                     }
                 });
 
-                if let Some(rep) = project.audio_replacements.get(&self.selected_track) {
+                if let Some(rep) = project.get_event_replacement(&active_key) {
                     ui.colored_label(
                         Color32::from_rgb(80, 230, 150),
                         format!("✔ Archivo vinculado: {}", rep.external_file_path),
@@ -247,14 +388,28 @@ impl AudioEditorState {
             cols[1].group(|ui| {
                 ui.heading("🎛️ Mezclador de Canales de Sonido (Solo / Mute)");
 
-                // Indicador de salida física de hardware
-                let dev_name = jukebox.audio_out.as_ref().map(|a| a.active_device_name()).unwrap_or_else(|| "Dispositivo de Audio".to_string());
+                // Indicador de salida física de hardware y confirmación audible
+                let dev_name = jukebox
+                    .audio_out
+                    .as_ref()
+                    .map(|a| a.active_device_name())
+                    .unwrap_or_else(|| "Dispositivo de Audio".to_string());
                 let rate = jukebox.sample_rate();
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new("🔊 Salida:").strong());
                     ui.label(format!("{} ({} Hz)", dev_name, rate));
                     if jukebox.playing {
-                        ui.colored_label(Color32::from_rgb(80, 240, 140), "● Activo");
+                        if jukebox.last_playback_confirmed_audible {
+                            ui.colored_label(
+                                Color32::from_rgb(80, 240, 140),
+                                "● Audio APU Confirmado",
+                            );
+                        } else {
+                            ui.colored_label(
+                                Color32::from_rgb(255, 200, 90),
+                                "● Sin Señal Audible",
+                            );
+                        }
                     } else {
                         ui.colored_label(Color32::LIGHT_GRAY, "○ Pausado");
                     }
@@ -343,17 +498,23 @@ impl AudioEditorState {
                 });
 
                 ui.add_space(6.0);
-                if ui.button(
-                    egui::RichText::new(format!(
-                        "📌 Memorizar esta música exacta en la Pista #{:02X}",
-                        self.selected_track
-                    ))
-                    .strong()
-                    .color(Color32::from_rgb(180, 240, 255)),
-                ).clicked() {
+                if ui
+                    .button(
+                        egui::RichText::new(format!(
+                            "📌 Memorizar este estado exacto en el Evento ({})",
+                            active_key.short_label()
+                        ))
+                        .strong()
+                        .color(Color32::from_rgb(180, 240, 255)),
+                    )
+                    .clicked()
+                {
                     let state = project.nes_live.to_save_state_bytes();
-                    project.audio_track_states.insert(self.selected_track, state);
-                    self.status_msg = format!("¡Pista #{:02X} memorizada con el estado de sonido actual!", self.selected_track);
+                    project.set_event_state(active_key.clone(), state);
+                    self.status_msg = format!(
+                        "¡Evento {} memorizado con el estado de sonido actual!",
+                        active_key.short_label()
+                    );
                 }
 
                 ui.add_space(6.0);

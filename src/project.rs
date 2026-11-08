@@ -34,22 +34,199 @@ pub struct SubroutineInfo {
     pub preview_asm: Vec<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum SoundTrigger {
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+#[allow(dead_code)]
+pub enum AudioTrigger {
     Subroutine(u16),
     RamAddress(u16),
+    DriverCommand {
+        entry_point: u16,
+        queue_address: u16,
+    },
     Unknown,
+}
+
+impl AudioTrigger {
+    pub fn short_label(&self) -> String {
+        match self {
+            AudioTrigger::Subroutine(addr) => format!("JSR ${:04X}", addr),
+            AudioTrigger::RamAddress(addr) => format!("RAM ${:04X}", addr),
+            AudioTrigger::DriverCommand {
+                entry_point,
+                queue_address,
+            } => format!("DRV ${:04X}->${:04X}", entry_point, queue_address),
+            AudioTrigger::Unknown => "Desconocido".to_string(),
+        }
+    }
+}
+
+pub type SoundTrigger = AudioTrigger;
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub struct AudioEventKey {
+    pub trigger: AudioTrigger,
+    pub command_id: u8,
+    pub bank_context: Option<u16>,
+}
+
+impl AudioEventKey {
+    pub fn new(trigger: AudioTrigger, command_id: u8) -> Self {
+        Self {
+            trigger,
+            command_id,
+            bank_context: None,
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn with_bank(trigger: AudioTrigger, command_id: u8, bank: u16) -> Self {
+        Self {
+            trigger,
+            command_id,
+            bank_context: Some(bank),
+        }
+    }
+
+    pub fn short_label(&self) -> String {
+        match self.bank_context {
+            Some(b) => format!("{} :: ${:02X} (Bank ${:02X})", self.trigger.short_label(), self.command_id, b),
+            None => format!("{} :: ${:02X}", self.trigger.short_label(), self.command_id),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AudioEventKind {
+    Music,
+    Sfx,
+    Fanfare,
+    Control,
+    Unknown,
+}
+
+impl AudioEventKind {
+    pub fn is_music_like(&self) -> bool {
+        matches!(self, AudioEventKind::Music | AudioEventKind::Fanfare)
+    }
+
+    pub fn label_es(&self) -> &'static str {
+        match self {
+            AudioEventKind::Music => "Música (BGM)",
+            AudioEventKind::Sfx => "Efecto (SFX)",
+            AudioEventKind::Fanfare => "Fanfarria",
+            AudioEventKind::Control => "Control / Silencio",
+            AudioEventKind::Unknown => "Sin clasificar",
+        }
+    }
+
+    pub fn label(&self) -> &'static str {
+        self.label_es()
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[allow(dead_code)]
+pub enum AudioValidationStatus {
+    Confirmed,
+    Candidate,
+    Unclassified,
+    Rejected(String),
+}
+
+impl AudioValidationStatus {
+    pub fn label_es(&self) -> &'static str {
+        match self {
+            AudioValidationStatus::Confirmed => "Confirmado",
+            AudioValidationStatus::Candidate => "Candidato",
+            AudioValidationStatus::Unclassified => "Sin clasificar",
+            AudioValidationStatus::Rejected(_) => "Rechazado",
+        }
+    }
+
+    pub fn label(&self) -> &'static str {
+        self.label_es()
+    }
 }
 
 #[derive(Clone, Debug)]
 pub struct DiscoveredTrack {
+    pub key: AudioEventKey,
+    pub kind: AudioEventKind,
+    pub status: AudioValidationStatus,
     pub id: u8,
     pub title: String,
     pub is_music: bool,
+    pub approx_frames: u16,
+    pub active_channels: [bool; 5],
+    pub confidence: f32,
+}
+
+impl DiscoveredTrack {
+    pub fn new_event(
+        key: AudioEventKey,
+        kind: AudioEventKind,
+        status: AudioValidationStatus,
+        title: impl Into<String>,
+    ) -> Self {
+        let id = key.command_id;
+        let is_music = kind.is_music_like();
+        Self {
+            key,
+            kind,
+            status,
+            id,
+            title: title.into(),
+            is_music,
+            approx_frames: 0,
+            active_channels: [false; 5],
+            confidence: 0.5,
+        }
+    }
+
+    pub fn with_key(
+        key: AudioEventKey,
+        kind: AudioEventKind,
+        status: AudioValidationStatus,
+        title: impl Into<String>,
+    ) -> Self {
+        Self::new_event(key, kind, status, title)
+    }
+
+    pub fn with_metrics(
+        mut self,
+        approx_frames: u16,
+        active_channels: [bool; 5],
+        confidence: f32,
+    ) -> Self {
+        self.approx_frames = approx_frames;
+        self.active_channels = active_channels;
+        self.confidence = confidence;
+        self
+    }
+
+    pub fn set_kind(&mut self, kind: AudioEventKind) {
+        self.is_music = kind.is_music_like();
+        self.kind = kind;
+    }
+
+    pub fn channels_badge(&self) -> String {
+        let labels = ["P1", "P2", "Tri", "Noi", "DMC"];
+        let active: Vec<&str> = labels
+            .iter()
+            .enumerate()
+            .filter_map(|(i, &l)| if self.active_channels[i] { Some(l) } else { None })
+            .collect();
+        if active.is_empty() {
+            "-".to_string()
+        } else {
+            active.join("+")
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
 pub struct AudioReplacement {
+    pub event_key: Option<AudioEventKey>,
     pub track_id: u8,
     pub label: String,
     pub external_file_path: String,
@@ -112,12 +289,15 @@ pub struct NgsProject {
     pub nes_live: Nes,
     pub sound_cmd_ram_addrs: Vec<u16>,
     pub sound_trigger: SoundTrigger,
+    pub audio_triggers: Vec<AudioTrigger>,
     pub discovered_tracks: Vec<DiscoveredTrack>,
     pub base_audio_save_state: Option<Vec<u8>>,
     pub modified_tiles: HashMap<usize, [u8; 16]>,
     pub hd_sprites: HashMap<usize, HdSpriteBinding>,
     pub audio_replacements: HashMap<u8, AudioReplacement>,
+    pub audio_event_replacements: HashMap<AudioEventKey, AudioReplacement>,
     pub audio_track_states: HashMap<u8, Vec<u8>>,
+    pub audio_event_states: HashMap<AudioEventKey, Vec<u8>>,
     pub subroutines: Vec<SubroutineInfo>,
     pub palettes: [[u8; 4]; 8],
     pub selected_palette: usize,
@@ -146,12 +326,15 @@ impl Default for NgsProject {
             nes_live: Nes::new_with_demo(),
             sound_cmd_ram_addrs: Vec::new(),
             sound_trigger: SoundTrigger::Unknown,
+            audio_triggers: Vec::new(),
             discovered_tracks: Vec::new(),
             base_audio_save_state: None,
             modified_tiles: HashMap::new(),
             hd_sprites: HashMap::new(),
             audio_replacements: HashMap::new(),
+            audio_event_replacements: HashMap::new(),
             audio_track_states: HashMap::new(),
+            audio_event_states: HashMap::new(),
             subroutines: Vec::new(),
             palettes: [
                 [0x0F, 0x16, 0x27, 0x30], // 0: Paleta Cálida / Rojos
@@ -415,8 +598,172 @@ impl NgsProject {
         lines.push(format!("  \"scenes_captured\": {},", self.scenes.len()));
         lines.push(format!("  \"modified_tiles_count\": {},", self.modified_tiles.len()));
         lines.push(format!("  \"hd_sprites_count\": {},", self.hd_sprites.len()));
-        lines.push(format!("  \"audio_replacements_count\": {}", self.audio_replacements.len()));
+        lines.push(format!(
+            "  \"audio_triggers_count\": {},",
+            self.audio_triggers.len()
+        ));
+        lines.push(format!(
+            "  \"audio_replacements_count\": {}",
+            self.audio_event_replacements
+                .len()
+                .max(self.audio_replacements.len())
+        ));
         lines.push("}".to_string());
         fs::write(path, lines.join("\n")).map_err(|e| e.to_string())
+    }
+
+    /// Registra un trigger de audio en el proyecto sin duplicarlo y sincroniza el trigger primario legado.
+    pub fn register_audio_trigger(&mut self, trigger: AudioTrigger) {
+        if matches!(trigger, AudioTrigger::Unknown) {
+            return;
+        }
+        if !self.audio_triggers.contains(&trigger) {
+            self.audio_triggers.push(trigger.clone());
+        }
+        if matches!(self.sound_trigger, SoundTrigger::Unknown) {
+            self.sound_trigger = trigger;
+        }
+    }
+
+    /// Añade o actualiza un evento de audio en `discovered_tracks` identificado por su `AudioEventKey`.
+    pub fn upsert_discovered_track(&mut self, track: DiscoveredTrack) {
+        self.register_audio_trigger(track.key.trigger.clone());
+        if let Some(existing) = self
+            .discovered_tracks
+            .iter_mut()
+            .find(|t| t.key == track.key)
+        {
+            *existing = track;
+        } else {
+            self.discovered_tracks.push(track);
+        }
+    }
+
+    pub fn set_event_state(&mut self, key: AudioEventKey, state: Vec<u8>) {
+        self.audio_track_states
+            .entry(key.command_id)
+            .or_insert_with(|| state.clone());
+        self.audio_event_states.insert(key, state);
+    }
+
+    pub fn get_event_state(&self, key: &AudioEventKey) -> Option<&Vec<u8>> {
+        self.audio_event_states
+            .get(key)
+            .or_else(|| self.audio_track_states.get(&key.command_id))
+    }
+
+    pub fn set_event_replacement(&mut self, key: AudioEventKey, mut replacement: AudioReplacement) {
+        replacement.event_key = Some(key.clone());
+        self.audio_replacements
+            .insert(key.command_id, replacement.clone());
+        self.audio_event_replacements.insert(key, replacement);
+    }
+
+    pub fn get_event_replacement(&self, key: &AudioEventKey) -> Option<&AudioReplacement> {
+        self.audio_event_replacements
+            .get(key)
+            .or_else(|| self.audio_replacements.get(&key.command_id))
+    }
+
+    pub fn remove_event_replacement(&mut self, key: &AudioEventKey) {
+        self.audio_event_replacements.remove(key);
+        if !self
+            .audio_event_replacements
+            .keys()
+            .any(|k| k.command_id == key.command_id)
+        {
+            self.audio_replacements.remove(&key.command_id);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_same_command_id_with_different_triggers_are_distinct_events() {
+        let mut project = NgsProject::default();
+        let bgm_trigger = AudioTrigger::RamAddress(0x04F5);
+        let sfx_trigger = AudioTrigger::RamAddress(0x04F2);
+
+        let bgm_key = AudioEventKey::new(bgm_trigger.clone(), 0x01);
+        let sfx_key = AudioEventKey::new(sfx_trigger.clone(), 0x01);
+
+        assert_ne!(
+            bgm_key, sfx_key,
+            "El mismo command_id ($01) con diferente AudioTrigger debe producir claves distintas"
+        );
+
+        let bgm_track = DiscoveredTrack::with_key(
+            bgm_key.clone(),
+            AudioEventKind::Music,
+            AudioValidationStatus::Confirmed,
+            "BGM $01 - Overworld",
+        );
+        let sfx_track = DiscoveredTrack::with_key(
+            sfx_key.clone(),
+            AudioEventKind::Sfx,
+            AudioValidationStatus::Confirmed,
+            "SFX $01 - Jump",
+        );
+
+        project.upsert_discovered_track(bgm_track);
+        project.upsert_discovered_track(sfx_track);
+
+        assert_eq!(project.discovered_tracks.len(), 2);
+        assert_eq!(project.audio_triggers.len(), 2);
+        assert_eq!(project.discovered_tracks[0].kind, AudioEventKind::Music);
+        assert_eq!(project.discovered_tracks[1].kind, AudioEventKind::Sfx);
+
+        project.set_event_state(bgm_key.clone(), vec![0xAA, 0xBB]);
+        project.set_event_state(sfx_key.clone(), vec![0xCC, 0xDD]);
+        assert_eq!(
+            project.get_event_state(&bgm_key).unwrap().as_slice(),
+            &[0xAA, 0xBB]
+        );
+        assert_eq!(
+            project.get_event_state(&sfx_key).unwrap().as_slice(),
+            &[0xCC, 0xDD]
+        );
+
+        project.set_event_replacement(
+            bgm_key.clone(),
+            AudioReplacement {
+                event_key: Some(bgm_key.clone()),
+                track_id: 0x01,
+                label: "BGM Overworld".to_string(),
+                external_file_path: "overworld.mp3".to_string(),
+                is_sfx_wav: false,
+            },
+        );
+        project.set_event_replacement(
+            sfx_key.clone(),
+            AudioReplacement {
+                event_key: Some(sfx_key.clone()),
+                track_id: 0x01,
+                label: "SFX Jump".to_string(),
+                external_file_path: "jump.wav".to_string(),
+                is_sfx_wav: true,
+            },
+        );
+
+        assert_eq!(
+            project
+                .get_event_replacement(&bgm_key)
+                .unwrap()
+                .external_file_path,
+            "overworld.mp3"
+        );
+        assert_eq!(
+            project
+                .get_event_replacement(&sfx_key)
+                .unwrap()
+                .external_file_path,
+            "jump.wav"
+        );
+
+        project.remove_event_replacement(&sfx_key);
+        assert!(project.get_event_replacement(&bgm_key).is_some());
     }
 }

@@ -50,6 +50,7 @@ extern "system" {
 #[link(name = "kernel32")]
 extern "system" {
     fn GetCurrentThreadId() -> u32;
+    #[allow(dead_code)]
     fn GetCommandLineW() -> *mut u16;
     fn CreateProcessW(
         lp_application_name: *const u16,
