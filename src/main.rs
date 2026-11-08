@@ -1,16 +1,20 @@
 mod codegen;
 mod editors;
+mod graphics;
 mod parser;
 mod project;
 mod runtime;
 #[cfg(target_os = "windows")]
 mod win32_show;
+mod workspace;
 
-use eframe::egui::{self, Color32};
+use eframe::egui::{self, Color32, RichText};
 use editors::audio::AudioEditorState;
 use editors::graphics::GraphicsEditorState;
 use project::NgsProject;
 use runtime::jukebox_apu::JukeboxEngine;
+use std::path::PathBuf;
+use workspace::WorkspaceTemplate;
 
 const WINDOW_TITLE: &str = "NesGameStudio — IDE Visual de Remasterización HD, Audio & Creación 2D/2.5D";
 
@@ -30,12 +34,20 @@ struct NesGameStudioApp {
     subroutine_filter: String,
     show_about_modal: bool,
     show_guide_window: bool,
+    show_workspace_wizard: bool,
+    wizard_is_existing_game: bool,
+    wizard_game_title: String,
+    wizard_template: WorkspaceTemplate,
+    wizard_existing_source: Option<PathBuf>,
+    wizard_target_parent_dir: PathBuf,
     status_bar_msg: String,
 }
 
 impl Default for NesGameStudioApp {
     fn default() -> Self {
-        // Inicia limpio, sin cargar ningún archivo automáticamente
+        let default_ws_parent = std::env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join("Workspaces");
         Self {
             project: NgsProject::default(),
             active_tab: ActiveTab::GraphicsGallery,
@@ -45,7 +57,13 @@ impl Default for NesGameStudioApp {
             subroutine_filter: "TODAS".to_string(),
             show_about_modal: false,
             show_guide_window: false,
-            status_bar_msg: "Listo. Usa el menú Archivo -> Abrir Código .C / .ASM... para comenzar.".to_string(),
+            show_workspace_wizard: false,
+            wizard_is_existing_game: false,
+            wizard_game_title: "Mi_Juego_NGS".to_string(),
+            wizard_template: WorkspaceTemplate::PlatformerAction,
+            wizard_existing_source: None,
+            wizard_target_parent_dir: default_ws_parent,
+            status_bar_msg: "Listo. Crea un Workspace (Juego Nuevo o Existente) o abre un proyecto desde el menú Archivo.".to_string(),
         }
     }
 }
@@ -61,17 +79,43 @@ impl eframe::App for NesGameStudioApp {
         // BARRA DE MENÚ ESTÁNDAR DE WINDOWS (Archivo | Edición | Vista | Compilar | Ayuda)
         egui::TopBottomPanel::top("main_menu_bar").show(ctx, |ui| {
             egui::menu::bar(ui, |ui| {
-                // 1. MENÚ ARCHIVO
+                // 1. MENÚ ARCHIVO (CON GESTIÓN COMPLETA DE WORKSPACE FASE G0)
                 ui.menu_button("Archivo", |ui| {
-                    if ui.button("📄 Nuevo Proyecto en Blanco").clicked() {
-                        self.jukebox.playing = false;
-                        self.project.clear_to_new_project();
-                        self.graphics_editor.invalidate_texture();
-                        self.status_bar_msg = "Nuevo proyecto en blanco inicializado.".to_string();
+                    if ui.button("✨ Crear Workspace para Juego Nuevo...").clicked() {
+                        self.wizard_is_existing_game = false;
+                        self.show_workspace_wizard = true;
                         ui.close_menu();
                     }
+                    if ui
+                        .button("🚀 Crear Workspace desde Juego Existente (.NES / .C)...")
+                        .clicked()
+                    {
+                        self.wizard_is_existing_game = true;
+                        self.show_workspace_wizard = true;
+                        ui.close_menu();
+                    }
+                    if ui
+                        .button("📂 Abrir Workspace Existente (project.ngs.json)...")
+                        .clicked()
+                    {
+                        ui.close_menu();
+                        if let Some(path) = rfd::FileDialog::new()
+                            .add_filter("Workspace NesGameStudio", &["json"])
+                            .pick_file()
+                        {
+                            self.jukebox.playing = false;
+                            self.audio_editor = editors::audio::AudioEditorState::default();
+                            match workspace::load_workspace(&path, &mut self.project) {
+                                Ok(msg) => {
+                                    self.graphics_editor.invalidate_texture();
+                                    self.status_bar_msg = msg;
+                                }
+                                Err(e) => self.status_bar_msg = e,
+                            }
+                        }
+                    }
                     ui.separator();
-                    if ui.button("📂 Abrir Código .C / .ASM (de NesEmuRust)...").clicked() {
+                    if ui.button("📂 Abrir Código .C / .ASM (Auto-Workspace)...").clicked() {
                         ui.close_menu();
                         if let Some(path) = rfd::FileDialog::new()
                             .add_filter("Código C de NesEmuRust", &["c"])
@@ -79,7 +123,18 @@ impl eframe::App for NesGameStudioApp {
                         {
                             self.jukebox.playing = false;
                             self.audio_editor = editors::audio::AudioEditorState::default();
-                            match parser::load_c_and_asm_into_project(&path, &mut self.project) {
+                            let stem = path
+                                .file_stem()
+                                .and_then(|s| s.to_str())
+                                .unwrap_or("Juego_NES");
+                            let ws_root = self
+                                .wizard_target_parent_dir
+                                .join(format!("{}_Workspace", workspace::sanitize_slug(stem)));
+                            match workspace::create_workspace_from_existing_game(
+                                &path,
+                                &ws_root,
+                                &mut self.project,
+                            ) {
                                 Ok(msg) => {
                                     self.graphics_editor.invalidate_texture();
                                     self.status_bar_msg = msg;
@@ -88,7 +143,7 @@ impl eframe::App for NesGameStudioApp {
                             }
                         }
                     }
-                    if ui.button("🎮 Abrir ROM .NES Directamente...").clicked() {
+                    if ui.button("🎮 Abrir ROM .NES Directamente (Auto-Workspace)...").clicked() {
                         ui.close_menu();
                         if let Some(path) = rfd::FileDialog::new()
                             .add_filter("ROM de NES", &["nes"])
@@ -96,7 +151,18 @@ impl eframe::App for NesGameStudioApp {
                         {
                             self.jukebox.playing = false;
                             self.audio_editor = editors::audio::AudioEditorState::default();
-                            match parser::load_nes_rom_into_project(&path, &mut self.project) {
+                            let stem = path
+                                .file_stem()
+                                .and_then(|s| s.to_str())
+                                .unwrap_or("Juego_NES");
+                            let ws_root = self
+                                .wizard_target_parent_dir
+                                .join(format!("{}_Workspace", workspace::sanitize_slug(stem)));
+                            match workspace::create_workspace_from_existing_game(
+                                &path,
+                                &ws_root,
+                                &mut self.project,
+                            ) {
                                 Ok(msg) => {
                                     self.graphics_editor.invalidate_texture();
                                     self.status_bar_msg = msg;
@@ -106,15 +172,23 @@ impl eframe::App for NesGameStudioApp {
                         }
                     }
                     ui.separator();
-                    if ui.button("💾 Guardar Proyecto (.ngs.json)...").clicked() {
+                    if ui.button("💾 Guardar / Sincronizar Workspace Actual").clicked() {
                         ui.close_menu();
-                        if let Some(path) = rfd::FileDialog::new()
-                            .set_file_name(&format!("{}.ngs.json", self.project.game_title))
-                            .add_filter("Proyecto NesGameStudio", &["json"])
-                            .save_file()
-                        {
-                            match self.project.save_project_manifest(&path) {
-                                Ok(_) => self.status_bar_msg = format!("Proyecto guardado en {}", path.display()),
+                        if let Some(ws_dir) = self.project.workspace_dir.clone() {
+                            match workspace::save_workspace(&self.project, &ws_dir) {
+                                Ok(msg) => self.status_bar_msg = msg,
+                                Err(e) => self.status_bar_msg = e,
+                            }
+                        } else if let Some(folder) = rfd::FileDialog::new().pick_folder() {
+                            let ws_dir = folder.join(format!(
+                                "{}_Workspace",
+                                workspace::sanitize_slug(&self.project.game_title)
+                            ));
+                            match workspace::save_workspace(&self.project, &ws_dir) {
+                                Ok(msg) => {
+                                    self.project.workspace_dir = Some(ws_dir);
+                                    self.status_bar_msg = msg;
+                                }
                                 Err(e) => self.status_bar_msg = e,
                             }
                         }
@@ -132,24 +206,33 @@ impl eframe::App for NesGameStudioApp {
                         if self.project.loaded {
                             for _ in 0..60 {
                                 self.project.nes_live.step_frame();
+                                self.project.sync_live_chr_ram_signatures();
                                 self.project.nes_live.bus.apu.audio_samples.clear();
                             }
                             let n = self.project.scenes.len() + 1;
                             self.project
                                 .capture_current_live_scene(format!("Escena {}: Captura en Vivo", n));
+                            self.project.auto_sync_workspace();
                             self.graphics_editor.invalidate_texture();
-                            self.status_bar_msg = "Nueva escena de mapas de bits capturada.".to_string();
+                            self.status_bar_msg = "Nueva escena capturada y sincronizada en el Workspace.".to_string();
                         }
                     }
                     ui.separator();
-                    if ui.button("🧹 Limpiar Tiles Editados").clicked() {
+                    if ui.button("🔄 Restaurar Todos los Gráficos al Original").clicked() {
+                        let all_ids: Vec<_> = self.project.tile_patches.keys().cloned().collect();
+                        for id in all_ids {
+                            self.project.restore_tile_original(&id);
+                        }
                         self.project.modified_tiles.clear();
-                        self.status_bar_msg = "Se limpiaron las ediciones de tiles.".to_string();
+                        self.project.auto_sync_workspace();
+                        self.graphics_editor.invalidate_texture();
+                        self.status_bar_msg = "Todos los gráficos fueron restaurados a su estado original.".to_string();
                         ui.close_menu();
                     }
                     if ui.button("🧹 Limpiar Reemplazos de Audio (.MP3/.WAV)").clicked() {
                         self.project.audio_replacements.clear();
                         self.project.audio_event_replacements.clear();
+                        self.project.auto_sync_workspace();
                         self.status_bar_msg = "Se limpiaron los reemplazos de audio.".to_string();
                         ui.close_menu();
                     }
@@ -224,7 +307,7 @@ impl eframe::App for NesGameStudioApp {
                     }
                 });
 
-                // Indicador (no clicable) de la vista actual
+                // Indicador de la vista actual y botones rápidos de Workspace
                 ui.separator();
                 let current = match self.active_tab {
                     ActiveTab::GraphicsGallery => "Vista actual: 🎨 Gráficos",
@@ -232,8 +315,25 @@ impl eframe::App for NesGameStudioApp {
                     ActiveTab::SubroutinesInspector => "Vista actual: 🔍 Código",
                 };
                 ui.weak(current);
+                ui.separator();
+                if ui.small_button("✨ Nuevo Juego (Workspace)").clicked() {
+                    self.wizard_is_existing_game = false;
+                    self.show_workspace_wizard = true;
+                }
+                if ui.small_button("🚀 Importar Juego a Workspace").clicked() {
+                    self.wizard_is_existing_game = true;
+                    self.show_workspace_wizard = true;
+                }
+                if let Some(ws_dir) = &self.project.workspace_dir {
+                    ui.colored_label(
+                        Color32::from_rgb(100, 230, 150),
+                        format!("📁 Workspace: {}", ws_dir.display()),
+                    );
+                }
             });
         });
+
+        self.render_workspace_wizard_window(ctx);
 
         if self.show_guide_window {
             let mut open = true;
@@ -290,6 +390,153 @@ impl eframe::App for NesGameStudioApp {
 }
 
 impl NesGameStudioApp {
+    fn render_workspace_wizard_window(&mut self, ctx: &egui::Context) {
+        if !self.show_workspace_wizard {
+            return;
+        }
+        let mut open = self.show_workspace_wizard;
+        let mut should_close = false;
+        egui::Window::new("🗂️ Generador de Workspace de Proyecto (Juego Nuevo o Existente)")
+            .open(&mut open)
+            .resizable(false)
+            .default_width(580.0)
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.selectable_value(
+                        &mut self.wizard_is_existing_game,
+                        false,
+                        "✨ Crear Juego Nuevo desde Cero",
+                    );
+                    ui.selectable_value(
+                        &mut self.wizard_is_existing_game,
+                        true,
+                        "🚀 Crear Workspace desde Juego Existente (.NES / .C)",
+                    );
+                });
+                ui.separator();
+
+                if !self.wizard_is_existing_game {
+                    ui.label(
+                        RichText::new("Configura tu nuevo videojuego 2D / HD-2D:")
+                            .strong()
+                            .color(Color32::from_rgb(130, 220, 255)),
+                    );
+                    ui.horizontal(|ui| {
+                        ui.label("Nombre del Juego:");
+                        ui.text_edit_singleline(&mut self.wizard_game_title);
+                    });
+                    ui.add_space(4.0);
+                    ui.label("Selecciona una Plantilla Inicial (funcional a 60 FPS):");
+                    for &tmpl in WorkspaceTemplate::all() {
+                        ui.radio_value(&mut self.wizard_template, tmpl, tmpl.label_es());
+                        ui.indent(tmpl.code(), |ui| {
+                            ui.weak(tmpl.description_es());
+                        });
+                    }
+                } else {
+                    ui.label(
+                        RichText::new("Importa una ROM .NES o código .C/.ASM a un Workspace aislado:")
+                            .strong()
+                            .color(Color32::from_rgb(130, 220, 255)),
+                    );
+                    ui.horizontal(|ui| {
+                        let current_src = self
+                            .wizard_existing_source
+                            .as_ref()
+                            .map(|p| p.display().to_string())
+                            .unwrap_or_else(|| "(Ningún archivo seleccionado)".to_string());
+                        ui.label(format!("Archivo base: {}", current_src));
+                        if ui.button("📂 Elegir .NES o .C...").clicked() {
+                            if let Some(p) = rfd::FileDialog::new()
+                                .add_filter("Juego NES o Código C", &["nes", "c"])
+                                .pick_file()
+                            {
+                                if let Some(stem) = p.file_stem().and_then(|s| s.to_str()) {
+                                    self.wizard_game_title = stem.to_string();
+                                }
+                                self.wizard_existing_source = Some(p);
+                            }
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Nombre del Workspace:");
+                        ui.text_edit_singleline(&mut self.wizard_game_title);
+                    });
+                }
+
+                ui.separator();
+                ui.horizontal(|ui| {
+                    ui.label(format!(
+                        "Carpeta raíz de Workspaces: {}",
+                        self.wizard_target_parent_dir.display()
+                    ));
+                    if ui.button("📁 Cambiar carpeta...").clicked() {
+                        if let Some(folder) = rfd::FileDialog::new().pick_folder() {
+                            self.wizard_target_parent_dir = folder;
+                        }
+                    }
+                });
+
+                let preview_ws_dir = self.wizard_target_parent_dir.join(format!(
+                    "{}_Workspace",
+                    workspace::sanitize_slug(&self.wizard_game_title)
+                ));
+                ui.weak(format!(
+                    "Se generará en: {} (con carpetas base/, src/, assets/, scenes/, scripts/, build/ y project.ngs.json)",
+                    preview_ws_dir.display()
+                ));
+
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui
+                        .button(
+                            RichText::new("🚀 Generar Workspace y Abrir en el Estudio")
+                                .strong()
+                                .color(Color32::from_rgb(100, 240, 150)),
+                        )
+                        .clicked()
+                    {
+                        self.jukebox.playing = false;
+                        self.audio_editor = editors::audio::AudioEditorState::default();
+                        let res = if !self.wizard_is_existing_game {
+                            workspace::create_workspace_for_new_game(
+                                &self.wizard_game_title,
+                                self.wizard_template,
+                                &preview_ws_dir,
+                                &mut self.project,
+                            )
+                        } else if let Some(src) = self.wizard_existing_source.clone() {
+                            workspace::create_workspace_from_existing_game(
+                                &src,
+                                &preview_ws_dir,
+                                &mut self.project,
+                            )
+                        } else {
+                            Err("Primero selecciona un archivo .NES o .C base.".to_string())
+                        };
+
+                        match res {
+                            Ok(msg) => {
+                                self.graphics_editor.invalidate_texture();
+                                self.status_bar_msg = msg;
+                                should_close = true;
+                            }
+                            Err(e) => {
+                                self.status_bar_msg = e;
+                            }
+                        }
+                    }
+                    if ui.button("Cancelar").clicked() {
+                        should_close = true;
+                    }
+                });
+            });
+        if should_close {
+            open = false;
+        }
+        self.show_workspace_wizard = open;
+    }
+
     fn render_subroutines_tab(&mut self, ui: &mut egui::Ui) {
         if !self.project.loaded {
             editors::guide::welcome_ui(ui);

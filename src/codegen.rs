@@ -1,48 +1,150 @@
+use crate::graphics::GraphicSource;
 use crate::project::NgsProject;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// Inyecta las modificaciones gráficas (CHR/PRG, Sprites HD) y de audio (.MP3/.WAV) en un archivo C listo para compilar
+/// Inyecta las modificaciones gráficas (`tile_patches` con mapeo automático `CHR-ROM` por banco,
+/// firma de 16 bytes `CHR-RAM`, offsets `PRG-ROM` y Banco de Memoria Extendida Ilimitada)
+/// y de audio (`.MP3`/`.WAV`) en un archivo C listo para compilar.
 pub fn generate_modified_c_file(project: &NgsProject) -> Result<PathBuf, String> {
     if project.raw_c_source.is_empty() {
-        return Err("Primero abre un archivo .C exportado por NesEmuRust para inyectar cambios.".to_string());
+        return Err("Primero abre un proyecto, ROM .NES o archivo .C exportado por NesEmuRust para inyectar cambios.".to_string());
     }
 
-    let base_dir = project
-        .c_file_path
-        .as_ref()
-        .and_then(|p| p.parent())
-        .unwrap_or_else(|| Path::new("."));
+    let base_dir = if let Some(ws_dir) = &project.workspace_dir {
+        let src_dir = ws_dir.join("src");
+        let _ = fs::create_dir_all(&src_dir);
+        src_dir
+    } else {
+        project
+            .c_file_path
+            .as_ref()
+            .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+            .unwrap_or_else(|| PathBuf::from("."))
+    };
 
     let out_c_path = base_dir.join(format!("{}_StudioMod.c", project.game_title));
 
-    // Construir el bloque C de parches automáticos de NesGameStudio
+    // Construir el bloque C de parches automáticos de NesGameStudio (Fase G1 + Memoria Extendida)
     let mut patch_block = String::new();
     patch_block.push_str("\n/* =====================================================================\n");
-    patch_block.push_str(" * BLOQUE INYECTADO AUTOMÁTICAMENTE POR NESGAMESTUDIO (FASE 1)\n");
+    patch_block.push_str(" * BLOQUE INYECTADO AUTOMÁTICAMENTE POR NESGAMESTUDIO (MAPEO AUTOMÁTICO)\n");
     patch_block.push_str(" * ===================================================================== */\n");
     patch_block.push_str(&format!(
         "#define NGS_WIDESCREEN_16_9 {}\n",
         if project.widescreen_16_9 { 1 } else { 0 }
     ));
 
+    // Emitir Banco de Memoria Extendida Ilimitada si hay activos HD / creaciones nuevas
+    if !project.extended_assets.is_empty() {
+        patch_block.push_str(&format!(
+            "#define NGS_EXTENDED_ASSETS_COUNT {}\n",
+            project.extended_assets.len()
+        ));
+        for asset in &project.extended_assets {
+            patch_block.push_str(&format!(
+                "/* Activo Extendido #{} '{}' ({}x{} RGBA, target={}) */\n",
+                asset.asset_id,
+                asset.name,
+                asset.width,
+                asset.height,
+                asset
+                    .target_graphic_id
+                    .as_ref()
+                    .map(|id| id.short_key())
+                    .unwrap_or_else(|| "standalone".to_string())
+            ));
+        }
+    }
+
     patch_block.push_str("static int g_ngs_patches_initialized = 0;\n");
     patch_block.push_str("static void ngs_apply_studio_patches_frame(void) {\n");
 
-    // 1. Mantener aplicados los tiles 8x8 editados en CHR_MEM[] (funciona tanto en CHR-ROM como tras descompresión CHR-RAM)
-    for (&tile_idx, bytes) in &project.modified_tiles {
-        let base_offset = (tile_idx % 512) * 16;
-        for (i, &b) in bytes.iter().enumerate() {
-            patch_block.push_str(&format!(
-                "    CHR_MEM[{} + {}] = 0x{:02X};\n",
-                base_offset, i, b
-            ));
+    // 1. Aplicar parches estructurados `tile_patches` (respetando banco CHR-ROM o firma de 16 bytes en CHR-RAM)
+    if !project.tile_patches.is_empty() {
+        let mut sorted_patches: Vec<_> = project.tile_patches.values().collect();
+        sorted_patches.sort_by_key(|p| p.id.short_key());
+
+        for patch in &sorted_patches {
+            match patch.id.source {
+                GraphicSource::ChrRom => {
+                    let base_offset =
+                        (patch.id.bank_or_scene * 512 + (patch.id.tile_index as usize)) * 16;
+                    patch_block.push_str(&format!(
+                        "    /* Parche CHR-ROM Banco #{} Tile #{:03X} */\n",
+                        patch.id.bank_or_scene, patch.id.tile_index
+                    ));
+                    patch_block.push_str(&format!(
+                        "    if (sizeof(CHR_MEM) >= {}) {{\n",
+                        base_offset + 16
+                    ));
+                    for (i, &b) in patch.modified_bytes.iter().enumerate() {
+                        patch_block.push_str(&format!(
+                            "        CHR_MEM[{} + {}] = 0x{:02X};\n",
+                            base_offset, i, b
+                        ));
+                    }
+                    patch_block.push_str("    }\n");
+                }
+                GraphicSource::ChrRamScene
+                | GraphicSource::OamSprite
+                | GraphicSource::NametableBg => {
+                    let base_offset = ((patch.id.tile_index as usize) % 512) * 16;
+                    patch_block.push_str(&format!(
+                        "    /* Parche Automático CHR-RAM Escena #{} Tile #{:03X} (con firma de patrón) */\n",
+                        patch.id.bank_or_scene, patch.id.tile_index
+                    ));
+                    patch_block.push_str(&format!(
+                        "    if (sizeof(CHR_MEM) >= {}) {{\n",
+                        base_offset + 16
+                    ));
+                    for (i, &b) in patch.modified_bytes.iter().enumerate() {
+                        patch_block.push_str(&format!(
+                            "        CHR_MEM[{} + {}] = 0x{:02X};\n",
+                            base_offset, i, b
+                        ));
+                    }
+                    patch_block.push_str("    }\n");
+                }
+                _ => {}
+            }
+        }
+    } else {
+        for (&tile_idx, bytes) in &project.modified_tiles {
+            let base_offset = (tile_idx % 512) * 16;
+            for (i, &b) in bytes.iter().enumerate() {
+                patch_block.push_str(&format!(
+                    "    CHR_MEM[{} + {}] = 0x{:02X};\n",
+                    base_offset, i, b
+                ));
+            }
         }
     }
 
     patch_block.push_str("    if (g_ngs_patches_initialized) return;\n");
     patch_block.push_str("    g_ngs_patches_initialized = 1;\n");
+
+    // 1b. Sincronizar automáticamente offsets en PRG_ROM[] detectados por AutoMemoryMapper
+    if !project.tile_patches.is_empty() {
+        let mut sorted_patches: Vec<_> = project.tile_patches.values().collect();
+        sorted_patches.sort_by_key(|p| p.id.short_key());
+        for patch in sorted_patches {
+            for &prg_off in &patch.auto_prg_offsets {
+                patch_block.push_str(&format!(
+                    "    if (sizeof(PRG_ROM) >= {}) {{\n",
+                    prg_off + 16
+                ));
+                for (i, &b) in patch.modified_bytes.iter().enumerate() {
+                    patch_block.push_str(&format!(
+                        "        PRG_ROM[{} + {}] = 0x{:02X};\n",
+                        prg_off, i, b
+                    ));
+                }
+                patch_block.push_str("    }\n");
+            }
+        }
+    }
 
     // 2. Registrar reemplazos de Sprites HD vinculados (para Enhanced 2D / Hybrid)
     for (&tile_idx, hd) in &project.hd_sprites {

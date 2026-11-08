@@ -122,19 +122,22 @@ Permite **escuchar aisladamente cada canción y efecto de sonido del juego** y r
 
 ```mermaid
 flowchart LR
-    A["Detector de Rutina de Sonido ([AUDIO / APU])"] --> B["Rockola Aislada (Play / Stop Track #00..#FF)"]
-    B --> C["Control por Canal (Solo / Mute: Pulse 1, Pulse 2, Triangle, Noise, DMC)"]
-    B --> D["Exportar Canción Original a .WAV"]
-    B --> E["Botón: Reemplazar este Track por archivo .MP3 o .WAV HD"]
+    A["Motor Universal de Detección de Audio"] -->|Subrutina JSR $XXXX| B1["Inyector de Subrutina CPU 6502 (call_subroutine_with_a)"]
+    A -->|Cola en RAM STA $XXXX| B2["Escritura en Cola RAM de Audio"]
+    B1 --> C["Rockola Aislada (Melodías reales y auténticas por APU)"]
+    B2 --> C
+    C --> D["Control por Canal (Solo / Mute: Pulse 1, Pulse 2, Triangle, Noise, DMC)"]
+    C --> E["Exportar Canción Original a .WAV (44.1 kHz 16-bit)"]
+    C --> F["Reproducción en Vivo de Archivos Vinculados .MP3 / .WAV (WinMM)"]
 ```
 
 1. **Reproductor Aislado de Música y Efectos (*Standalone Sound Test / Jukebox*)**:
-   - `NesGameStudio` localiza las subrutinas clasificadas como `[AUDIO / APU]` en el `.asm`/`.c` y ejecuta el motor de sonido del juego **en un entorno aislado (sin correr el resto del juego)**.
-   - Muestra una lista de pistas (`Track #00`, `Track #01`, `Track #02`...) con botones **▶️ Play**, **⏸️ Pausa** y **⏹️ Stop** para que puedas escuchar aisladamente cada canción de nivel, música de jefe o efecto de disparo/explosión.
-   - Incluye botones **Solo / Mute por cada uno de los 5 canales** (`Pulse 1`, `Pulse 2`, `Triangle`, `Noise`, `DMC`), visualizador de ondas/notas en vivo y opción para **exportar cualquier canción o efecto original del juego a un archivo `.WAV`**.
+   - **Motor Universal de Detección**: Implementa un análisis dinámico del PRG-ROM que identifica tanto llamadas a subrutina de sonido (`JSR $XXXX` con `A = sound_id`, como `$C16B` en *Contra*, `$E25F` en *Castlevania III*, `$CE31` en *Chip 'n Dale 2*, `$F81F` en *Tiny Toons*) como escrituras en colas de RAM de audio (`STA $XXXX`, como `$04F5` en *Super Mario Bros. 3*, `$0700` en *Ninja Gaiden II*, `$0042` en *Batman*, `$0602` en *Zelda*).
+   - **Pistas Reales y Únicas**: Cada tema musical y efecto de sonido de la lista invoca su comando real en el motor sonoro 6502, asegurando que cada pista produzca melodías y frecuencias de audio APU completamente distintas y auténticas.
+   - **Control de Canales y Grabación**: Botones **Solo / Mute por cada uno de los 5 canales** (`Pulse 1`, `Pulse 2`, `Triangle`, `Noise`, `DMC`), osciloscopio en tiempo real, panel de control de partida en vivo para avanzar pantallas, memorizador de pistas (`📌 Memorizar`) y grabador a archivo `.WAV`.
 2. **Reemplazo Visual por `.MP3` o `.WAV` de Alta Calidad**:
-   - Al escuchar una pista en la rockola (por ejemplo, descubres que el `Track #01` es la música de la Jungla en *Contra* y el `Track #12` es el sonido del disparo), simplemente haces clic en **"🔁 Reemplazar esta pista por `.MP3` / `.WAV`"**.
-   - Eliges tu archivo `.mp3` o `.wav` del disco y `NesGameStudio` inyecta automáticamente en el código `.c` el interceptor que silencia esa pista de 8 bits y reproduce tu archivo `.mp3` (vía `mciSendStringA`) o mezcla tu `.wav` polifónico a `44.1 kHz` cuando el juego solicite ese sonido.
+   - Al escuchar una pista en la rockola, haz clic en **"📂 Vincular archivo .MP3 / .WAV"** para asociar una versión orquestada o moderna.
+   - La Rockola reproduce de inmediato el archivo de alta fidelidad vía `winmm::mciSendStringA`, mostrando la animación sincronizada en el osciloscopio.
 
 ---
 
@@ -539,3 +542,279 @@ Esta hoja de ruta integra en orden cronológico y técnico el desarrollo del IDE
 1. **Archivos Pequeños y Modulares (Máximo ~200 líneas por archivo)**: Cada subsistema de `templates/engine/render/` y `templates/engine/gameplay/` vive en su propio archivo `.h`/`.c` independiente.
 2. **Trabajar directamente sobre el Workspace de `NesGameStudio`**: Tomar este [`PLAN_IMPLEMENTACION.md`](PLAN_IMPLEMENTACION.md) como especificación maestra en cada sesión.
 3. **Compactar o Iniciar Sesión Limpia al Concluir cada Fase**: Hacer `git commit` + `git push` al terminar cada fase y usar `/compact` para no arrastrar historial innecesario.
+
+---
+
+## 8. Registro de Trazabilidad Técnica y Planes de Corrección Estructural
+
+Esta sección mantiene la **trazabilidad viva** de cada módulo corregido o en ejecución dentro de `NesGameStudio`, registrando commits base, diagnóstico técnico, arquitectura aprobada, diseño de interfaz y criterios de aceptación verificables.
+
+---
+
+### 8.1. Hito Completado: `NGS Audio Discovery Engine 2.1` (Rockola Multitrigger)
+
+- **Estado**: ✅ **Completado, probado y publicado en GitHub (`origin/master`)**
+- **Commit Base**: `b81e1ef` → **Commit Entregado**: `cb862e8`
+- **Archivos Intervenidos**: [`src/project.rs`](file:///c:/Users/Cesar/Documents/AI%20Proyectos/NesGameStudio/src/project.rs), [`src/runtime/jukebox_apu.rs`](file:///c:/Users/Cesar/Documents/AI%20Proyectos/NesGameStudio/src/runtime/jukebox_apu.rs), [`src/editors/audio.rs`](file:///c:/Users/Cesar/Documents/AI%20Proyectos/NesGameStudio/src/editors/audio.rs), [`src/codegen.rs`](file:///c:/Users/Cesar/Documents/AI%20Proyectos/NesGameStudio/src/codegen.rs), [`src/main.rs`](file:///c:/Users/Cesar/Documents/AI%20Proyectos/NesGameStudio/src/main.rs)
+
+| Fase | Entregable | Estado | Verificación |
+| :---: | :--- | :---: | :--- |
+| **A1** | Modelo Multitrigger (`AudioTrigger`, `AudioEventKey`, `AudioEventKind`, `AudioValidationStatus`) y compatibilidad retroactiva en `.ngs.json` | ✅ Completado | `test_same_command_id_with_different_triggers_are_distinct_events` (`ok`) |
+| **A2** | Separación estricta de colas BGM (`$04F5`, `$04F4`) vs. 4 colas SFX (`$04F1`, `$04F2`, `$04F3`, `$04F6`) en *Super Mario Bros. 3*, *Zelda*, *Kirby*, *Contra* | ✅ Completado | `test_smb3_sfx_does_not_trigger_or_continue_bgm` (`ok`, energía tardía `0.0`) |
+| **A3–A4** | Descubrimiento multi-ruta y clasificación acústica (`Music`, `Fanfare`, `Sfx`, `Control`) con RMS normalizado, duración activa y actividad por canal (`P1/P2/Tri/Noi/DMC`) | ✅ Completado | `test_jukebox_engine_plays_distinct_tracks` (`ok` en 5 ROMs) |
+| **A5–A6** | Reproducción aislada de SFX (silenciando BGM heredada del *save state*), indicador `Confirmado PCM / Sin Audio` y pestañas `🎵 Música` / `🎺 Fanfarrias` / `💥 Efectos SFX` / `🎛 Control` | ✅ Completado | Validado en runtime y exportador C |
+
+---
+
+### 8.2. Plan en Revisión: `NGS Graphic Asset Inspector 2.2` — Explorador Gráfico Visual de 4 Paneles, Mapeo Automático de Memoria y Memoria Extendida Ilimitada (`Fases G1` a `G6`)
+
+- **Estado**: 🟡 **Listo para Ejecución (Pendiente de Aprobación del Usuario)**
+- **Commit Base**: `cb862e8` (`origin/master`)
+- **Archivos Principales**:
+  - [`src/project.rs`](file:///c:/Users/Cesar/Documents/AI%20Proyectos/NesGameStudio/src/project.rs)
+  - [`src/editors/graphics.rs`](file:///c:/Users/Cesar/Documents/AI%20Proyectos/NesGameStudio/src/editors/graphics.rs)
+  - [`src/codegen.rs`](file:///c:/Users/Cesar/Documents/AI%20Proyectos/NesGameStudio/src/codegen.rs)
+  - Nuevos módulos: `src/graphics/mod.rs`, `src/graphics/oam_inspector.rs`, `src/graphics/metasprite.rs`, `src/graphics/animation.rs`, `src/graphics/replacement.rs`
+
+---
+
+#### 8.2.1. Diagnóstico Técnico Confirmado en el Código Actual
+
+| ID | Problema Detectado | Causa Raíz en el Código Actual | Solución Arquitectónica (`Fases G1–G6`) |
+| :---: | :--- | :--- | :--- |
+| **PG1** | **`PRG_ROM` tratado como catálogo gráfico masivo** (*Zelda* muestra `12,048 tiles` y `1,506 personajes` falsos) | [`NgsProject::rebuild_global_tile_catalog`](file:///c:/Users/Cesar/Documents/AI%20Proyectos/NesGameStudio/src/project.rs#L466-L491) divide indiscriminadamente todos los bancos de `prg_rom` en bloques de 16 bytes, convirtiendo código 6502, tablas de audio y punteros en supuesto ruido visual. | Separar por origen real (`GraphicSource`: `ChrRom`, `ChrRamScene`, `OamSprite`, `NametableBg`, `PrgCandidate`). Nunca mostrar `PRG_ROM` crudo como personajes por defecto. |
+| **PG2** | **Identificación insuficiente de tiles (`usize`) y colisión entre bancos** | `modified_tiles: HashMap<usize, [u8; 16]>` y [`generate_modified_c_file`](file:///c:/Users/Cesar/Documents/AI%20Proyectos/NesGameStudio/src/codegen.rs#L35) indexan con `(tile_idx % 512) * 16`, sobrescribiendo el mismo índice en todos los bancos y escenas. | Introducir `GraphicId` unívoco (`source` + `bank_or_scene` + `tile_index`) y almacenar ediciones en `tile_patches: HashMap<GraphicId, TilePatch>` sin destruir el buffer base. |
+| **PG3** | **Falsos personajes `16x32` y fichas cortadas a la mitad** | [`GraphicsEditorState::ui`](file:///c:/Users/Cesar/Documents/AI%20Proyectos/NesGameStudio/src/editors/graphics.rs#L220-L234) agrupa cada 8 tiles consecutivos (`step_by(8)`) asumiendo que todo personaje mide `16x32` y está contiguo en memoria. | Reconstruir entidades reales leyendo los **64 entradas de `OAM` (`256 bytes`)** y el bit 5 de `PPUCTRL` (`8x8` vs `8x16`), agrupando por proximidad espacial `(X, Y)` aunque sus tiles no sean contiguos en CHR. |
+| **PG4** | **Interfaz poco amigable basada en listas técnicas de miles de bloques** | El usuario se ve obligado a buscar entre miles de mosaicos `8x8` crudos sin contexto de quién es cada personaje en el juego. | Nueva **Interfaz Visual de 4 Paneles estilo GameMaker / IDE moderno** con selección directa haciendo clic sobre el personaje en la pantalla del juego en vivo. |
+| **PG5** | **Preocupación manual por bancos/offsets y límite de memoria NES** | En juegos `CHR-RAM` (como *Zelda* o *Contra*) la CPU copia/descomprime tiles desde `PRG_ROM` hacia `VRAM` en tiempo de ejecución; además, el límite clásico de 8 KB impide expandir gráficos. | **Mapeo Automático Transparente de Memoria** (rastreo automático en `CHR-ROM`, offset `PRG-ROM` y firma de 16 bytes en `CHR-RAM`) + **Banco de Memoria Extendida Ilimitada** en el estudio y en el `.C`/`.EXE` exportado. |
+
+---
+
+#### 8.2.2. Diseño de la Nueva Interfaz Visual Amigable de 4 Paneles (Estilo GameMaker)
+
+Tomando como referencia directa el diseño visual acordado:
+
+![Referencia de Interfaz Visual de 4 Paneles](C:/Users/Cesar/.gemini/antigravity/brain/452b7e90-285d-449b-9870-7d61de5f8d5f/NesGameStudio_Referencia_IDE.jpg)
+
+```
++--------------------------------------------------------------------------------------------------+
+| [ 🕹️ Juego en Vivo ] [ 🎨 Estudio de Personajes y Escenarios ] [ 🗺️ Mapas ] [ 🎵 Rockola ]      |
++------------------------+------------------------------------------------+------------------------+
+| 📂 EXPLORADOR DE       |  🎯 ESCENA INTERACTIVA (CLIC PARA SELECCIONAR) | 🔧 INSPECTOR Y EDITOR  |
+|    RECURSOS (Árbol)    |                                                |                        |
+|                        |   [▶ Correr] [⏸ Pausar] [⏭ +1 Frame] [📸 Cap] | [📋 Prop] [🖌 Pintar]  |
+| 🔍 [ Buscar...       ] |   [🔍 Zoom: 2x] [☑ Cajas OAM] [☑ Rejilla]     | [🖼 Reemplazar HD]     |
+|                        |  +------------------------------------------+  |                        |
+| ▼ 🦸 Personajes y      |  |                                          |  | Entidad: Link (Jugador)|
+|      Objetos Activos   |  |     +--------+      +--------+           |  | Tamaño: 16x16 (4 Spr)  |
+|   🟢 Entidad #1 (16x16)|  |     |OAM #01 |      |OAM #02 |           |  | Posición: X=120, Y=88  |
+|   🟡 Entidad #2 (16x16)|  |     | (Link) |      |(Octorok|           |  | Paleta: Sprite Pal #0  |
+|   🔴 Entidad #3 (8x16) |  |     +--------+      +--------+           |  |                        |
+|                        |  |         ▲ Clic directo en pantalla       |  | +--------------------+ |
+| ▼ 🏞️ Escenario Actual  |  |           selecciona el personaje        |  | |   LIENZO UNIFICADO | |
+|   🗺️ Mapa / Fondo      |  +------------------------------------------+  | |   DEL PERSONAJE    | |
+|   🧱 Bloques Usados    |                                                | |  (Pinta sobre el   | |
+|                        |------------------------------------------------| |   sprite completo) | |
+| ▼ ✨ Mis Creaciones HD |  🎞️ TIMELINE DE ANIMACIÓN Y FOTOGRAMAS        | +--------------------+ |
+|   ➕ Nuevo Personaje   |  [▶ Play] [🔁 Loop] Vel: [ 8 FPS ] [+ Frame]   | [↩ Deshacer] [↪ Rehac] |
+|                        |  +-------+  +-------+  +-------+  +-------+    | [🔄 Restaurar Original]|
+| ▶ 🔧 Avanzado (Bancos) |  |Frame 1|->|Frame 2|->|Frame 3|->|Frame 4|    | 🧠 Mapeo Automático:   |
+|   (Oculto por defecto) |  +-------+  +-------+  +-------+  +-------+    | ✅ CHR-RAM + PRG Sync  |
++------------------------+------------------------------------------------+------------------------+
+```
+
+1. **Panel Izquierdo — Explorador de Recursos en Árbol (Limpio y Organizado)**:
+   - **`🦸 Personajes y Objetos en Pantalla`**: Lista únicamente las entidades activas detectadas en la escena (`MetaspriteEntity`), con miniatura ensamblada a color real, dimensiones (`16x16`, `16x32`, etc.) y nombre editable (ej. *"Link"*, *"Enemigo Octorok"*, *"Espada"*).
+   - **`🏞️ Escenario y Fondo Actual`**: Muestra el mapa de fondo activo (*Nametable*) y únicamente los bloques `8x8` realmente usados por la pantalla actual.
+   - **`✨ Mis Creaciones y Gráficos Nuevos (Memoria Extendida)`**: Permite crear nuevos personajes, objetos o animaciones de cualquier tamaño (`16x16`, `32x32`, `64x64`, `HD RGBA`) sin restricciones de la NES.
+   - **`🔧 Vista Técnica Avanzada (Opcional y Colapsada)`**: Bancos `CHR-ROM`, `VRAM 8KB` y candidatos `PRG` quedan ocultos bajo esta rama colapsada para no saturar al usuario, pero accesibles con un clic si un usuario avanzado desea inspeccionarlos.
+
+2. **Panel Central Superior — Escena Interactiva con Selección por Clic (*Click-to-Select*)**:
+   - Muestra el juego corriendo a 60 FPS o pausado con controles inmediatos (`▶ Correr`, `⏸ Pausar`, `⏭ Avanzar 1 Frame`, `📸 Capturar Escena`).
+   - Dibuja recuadros inteligentes alrededor de cada personaje/objeto detectado en `OAM`.
+   - **Al hacer clic sobre cualquier personaje o elemento en la pantalla del juego**, el estudio lo selecciona automáticamente, resalta sus partes constitutivas y lo abre listo para editar en el panel derecho.
+
+3. **Panel Derecho — Inspector y Editor Unificado con 3 Pestañas**:
+   - **Pestaña `📋 Propiedades`**: Nombre del personaje, posición `(X, Y)`, dimensiones, paleta asignada, banderas (`Flip H`, `Flip V`, prioridad detrás/delante del fondo) y estado del mapeo automático de memoria (`✅ Mapeado automáticamente en CHR-RAM + PRG-ROM`).
+   - **Pestaña `🖌️ Pintar Pixel Art (Lienzo Unificado)`**:
+     - En lugar de editar 1 tile suelto de `8x8`, el usuario pinta directamente sobre el **lienzo completo del personaje ensamblado** (`16x16`, `16x32`, `24x32`, etc.).
+     - Al pintar un píxel en el lienzo compuesto, la herramienta **calcula automáticamente a qué sub-tile `(dx, dy)` pertenece, invierte la coordenada si ese sub-sprite tiene `FlipH`/`FlipV` activo en OAM, y actualiza el mapa de memoria correspondiente sin que el usuario tenga que saber cómo está partido el sprite**.
+     - Incluye **Historial `↩ Deshacer (Undo)` / `↪ Rehacer (Redo)`**, `🔄 Restaurar Original`, selector de color de la paleta activa y vista previa instantánea en el juego en vivo.
+   - **Pestaña `🖼️ Reemplazar / Expandir en HD (Memoria Ilimitada)`**:
+     - Botón para cargar un archivo `.PNG` / `.BMP` RGBA externo de cualquier resolución o expandir las dimensiones del personaje usando el banco de memoria extendida ilimitada.
+
+4. **Panel Central Inferior — Timeline de Animación y Fotogramas**:
+   - Conforme el personaje camina o ataca en el juego (o al avanzar frame por frame), el estudio detecta y agrupa automáticamente sus **poses de animación (`AnimationSequence`)** en una tira de fotogramas (`Frame 1`, `Frame 2`, `Frame 3`...) con controles `▶ Play`, `⏸ Pause`, `🔁 Loop` y velocidad en FPS.
+   - Hacer clic en cualquier fotograma del timeline lo carga en el lienzo de pintura para retocar esa pose específica o agregar nuevos cuadros de animación.
+
+---
+
+#### 8.2.3. Mapeo Automático Transparente de Memoria y Banco Extendido Ilimitado
+
+Para cumplir la regla de que **"la herramienta automáticamente actualice el mapa de memoria donde le corresponda y use toda la memoria que tenga sin que el usuario se preocupe por eso"**, implementaremos un motor de resolución automática de tres niveles (`AutoMemoryMapper`):
+
+```mermaid
+flowchart LR
+    PAINT["Usuario pinta sobre el Personaje o asigna PNG/Nuevo Gráfico"] --> MAPPER["AutoMemoryMapper (Transparente)"]
+    MAPPER -->|Juego CHR-ROM| CHR_ROM["Parchea GraphicId(ChrRom, bank, tile) + Inyecta por banco en C"]
+    MAPPER -->|Juego CHR-RAM (ej. Zelda / Contra)| CHR_RAM["1) Firma 16-bytes en VRAM (soporta compresión LZ/RLE)\n2) Busca y parchea offset exacto en PRG-ROM si no está comprimido"]
+    MAPPER -->|Sprite HD o Creación Nueva| EXT_MEM["Banco de Memoria Extendida Ilimitada (RGBA 32-bit en RAM C64)"]
+```
+
+1. **Nivel 1 — Juegos con `CHR-ROM` (ej. *Super Mario Bros.*, *SMB3*, *Castlevania III*)**:
+   - Cada tile editado se vincula automáticamente a su `GraphicId { source: ChrRom, bank_or_scene: bank_idx, tile_index }`.
+   - Se actualiza únicamente ese banco y tile en la vista previa y en el `.C` exportado, sin contaminar otros bancos.
+
+2. **Nivel 2 — Juegos con `CHR-RAM` (ej. *The Legend of Zelda*, *Contra*, *Mega Man*)**:
+   - En estos juegos no hay `CHR-ROM` fijo; el código 6502 copia o descomprime gráficos desde `PRG-ROM` hacia los `8 KB` de `CHR-RAM` (`VRAM $0000-$1FFF`).
+   - Cuando el usuario edita un personaje en escena, el `AutoMemoryMapper` hace dos cosas de forma **100% automática**:
+     1. **Rastreo directo en `PRG-ROM`**: Busca los 16 bytes originales del tile dentro de `prg_rom`. Si el gráfico estaba almacenado sin comprimir, registra automáticamente sus `prg_offsets: Vec<usize>` y los actualiza de forma no destructiva.
+     2. **Parche Dinámico por Firma de Patrón (`Pattern Signature Match`)**: Guarda los 16 bytes originales (`original_bytes: [u8; 16]`) junto con los 16 bytes modificados (`modified_bytes: [u8; 16]`) y su índice de tabla de patrones (`tile_index`). Tanto en el estudio en vivo como en la función `ngs_apply_studio_patches_frame()` del `.C` exportado, cuando el juego carga o descomprime `original_bytes` en `CHR_MEM`, el motor lo intercepta y sustituye en tiempo real por `modified_bytes`. **Esto garantiza que los cambios funcionen incluso si la ROM original usa compresión LZ/RLE en `PRG-ROM`**.
+
+3. **Nivel 3 — Banco de Memoria Extendida Ilimitada (`Extended Asset Bank`)**:
+   - Como el juego compilado por `NesEmuRust` + `NesGameStudio` es un ejecutable nativo de 64 bits en C (`x86_64`), **ya no estamos limitados a los 8 KB de VRAM ni a los 4 colores de la NES**.
+   - Todos los gráficos nuevos, personajes ampliados o reemplazos `.PNG`/`.BMP` RGBA se almacenan en el **Banco Extendido Ilimitado (`NGS_EXT_GRAPHICS_BANK[]`)** generado automáticamente en C, que intercepta el renderizado OAM de la entidad para dibujar texturas RGBA de cualquier tamaño y número de colores respetando la posición `(X, Y)`, `FlipH`, `FlipV` y visibilidad del juego.
+
+---
+
+#### 8.2.4. Desglose Trazable por Fase (`Fase G0` a `Fase G6`)
+
+##### Fase G0 — Generación y Gestión Automática de Workspace (Juego Existente o Juego Nuevo)
+- **Prioridad**: 🔴 Crítica (Base de todo el flujo de trabajo)
+- **Diagnóstico Actual**: Actualmente [`src/main.rs`](file:///c:/Users/Cesar/Documents/AI%20Proyectos/NesGameStudio/src/main.rs) solo carga archivos en RAM y [`NgsProject::save_project_manifest`](file:///c:/Users/Cesar/Documents/AI%20Proyectos/NesGameStudio/src/project.rs#L592-L613) escribe únicamente un resumen estadístico sin crear una carpeta de proyecto real ni permitir reabrir el workspace completo.
+- **Archivos**: [`src/project.rs`](file:///c:/Users/Cesar/Documents/AI%20Proyectos/NesGameStudio/src/project.rs), [`src/main.rs`](file:///c:/Users/Cesar/Documents/AI%20Proyectos/NesGameStudio/src/main.rs), nuevo `src/workspace.rs`
+- **Estructura Estándar del Workspace Generado en Disco**:
+  ```text
+  <NombreProyecto>_Workspace/
+  ├── project.ngs.json              # Manifiesto completo del proyecto (estado, mapeo de memoria, catálogo)
+  ├── base/                         # Copia aislada de la ROM .nes o código .c/.asm base (nunca modifica el archivo original del usuario)
+  ├── src/                          # Código C11 generado, parches automáticos de memoria y cabeceras del motor
+  ├── assets/
+  │   ├── graphics/
+  │   │   ├── tile_patches/         # Parches no destructivos y respaldos de tiles originales
+  │   │   ├── sprites_hd/           # Personajes y reemplazos .PNG / .BMP RGBA (Memoria Extendida)
+  │   │   └── creations/            # Gráficos y personajes nuevos creados desde cero
+  │   └── audio/
+  │       ├── bgm/                  # Pistas musicales (.WAV exportados / .MP3 de reemplazo)
+  │       └── sfx/                  # Efectos de sonido aislados (.WAV)
+  ├── scenes/                       # Escenas capturadas (.scene.bin) + Save States listos para edición instantánea
+  ├── scripts/                      # Comportamientos y lógica (.ngscript / .h)
+  └── build/                        # Ejecutables nativos compilados (.exe)
+  ```
+- **Dos Flujos de Creación de Workspace Soportados**:
+  1. **Workspace para un Juego Existente (`Importar .NES o .C/.ASM a Workspace`)**:
+     - Al abrir una ROM `.nes` o un archivo `.c`/`.asm` exportado por `NesEmuRust` (o desde el asistente *"🚀 Crear Workspace desde Juego Existente"*), la herramienta crea automáticamente la carpeta `<NombreJuego>_Workspace/`, copia la base dentro de `base/` para no alterar el archivo original, genera el código `.c` base en `src/` si se partió de un `.nes`, captura la escena inicial en `scenes/` y guarda `project.ngs.json`.
+  2. **Workspace para un Juego Nuevo desde Cero (`Crear Nuevo Juego 2D / HD-2D`)**:
+     - Asistente visual en el menú/pantalla de bienvenida donde el usuario elige el **Nombre del Juego**, la **Carpeta del Workspace** y una **Plantilla Inicial**:
+       - *🎮 Acción / Plataformas Lateral* (con jugador base controlable, gravedad, suelo y música chiptune inicial).
+       - *🗡️ Aventura Top-Down (Estilo RPG / Zelda)* (con personaje caminante en 4 direcciones, escenario inicial y colisiones).
+       - *🚀 Shoot 'em Up Espacial* (con nave, disparos, scroll automático y efectos de sonido).
+       - *📄 Lienzo en Blanco (Memoria Extendida Ilimitada)* (escena limpia lista para diseñar personajes, mapas y música desde cero).
+     - Genera toda la estructura de carpetas y un motor base funcional a `60 FPS` que ya se puede ejecutar en la Escena Interactiva, pintar en el Explorador Gráfico, escuchar en la Rockola y compilar a `.EXE`.
+  3. **Abrir Workspace Existente (`📂 Abrir Proyecto / Workspace (.ngs.json)...`) y Auto-Guardado**:
+     - Cualquier cambio (pintar sobre un personaje, agregar un `.PNG` HD, capturar una escena, renombrar una entidad o reemplazar un audio) se copia y sincroniza automáticamente dentro de la carpeta del Workspace activo.
+- **Criterio de aceptación**:
+  - El usuario puede crear un Workspace limpio tanto desde un juego existente (`.nes` / `.c`) como desde un juego nuevo desde cero, cerrarlo y volver a abrir `project.ngs.json` recuperando intactos sus personajes, escenas, gráficos HD y audios.
+
+##### Fase G1 — Modelo de Identidad Gráfica, Mapeo Automático y Separación de Fuentes
+- **Prioridad**: 🔴 Crítica
+- **Archivos**: [`src/project.rs`](file:///c:/Users/Cesar/Documents/AI%20Proyectos/NesGameStudio/src/project.rs), [`src/codegen.rs`](file:///c:/Users/Cesar/Documents/AI%20Proyectos/NesGameStudio/src/codegen.rs), nuevo `src/graphics/mod.rs`
+- **Estructuras**:
+  ```rust
+  #[derive(Clone, Debug, Hash, PartialEq, Eq, Serialize, Deserialize)]
+  pub enum GraphicSource {
+      ChrRom,        // Banco real de CHR-ROM
+      ChrRamScene,   // VRAM 8KB capturada en una escena
+      OamSprite,     // Tile referenciado activamente por OAM
+      NametableBg,   // Tile referenciado por el fondo activo
+      ExtendedBank,  // Nuevo gráfico sin límite de memoria
+      PrgCandidate,  // Candidato heurístico en PRG (solo vista avanzada)
+  }
+
+  #[derive(Clone, Debug, Hash, PartialEq, Eq, Serialize, Deserialize)]
+  pub struct GraphicId {
+      pub source: GraphicSource,
+      pub bank_or_scene: usize,
+      pub tile_index: u16,
+  }
+
+  #[derive(Clone, Debug, Serialize, Deserialize)]
+  pub struct TilePatch {
+      pub id: GraphicId,
+      pub original_bytes: [u8; 16],
+      pub modified_bytes: [u8; 16],
+      pub auto_prg_offsets: Vec<usize>, // Calculado automáticamente para CHR-RAM
+  }
+  ```
+- **Criterio de aceptación**:
+  - `PRG_ROM` nunca vuelve a listarse como catálogo masivo de personajes.
+  - `tile_patches` conserva `original_bytes` y `modified_bytes` permitiendo restaurar cualquier tile o personaje a su estado original en 1 clic.
+  - Editar el tile `#10` del banco `0` no altera el tile `#10` del banco `1`.
+
+##### Fase G2 — Clasificación de Recursos Reales y Filtro de Candidatos `PRG`
+- **Prioridad**: 🔴 Crítica
+- **Archivos**: [`src/project.rs`](file:///c:/Users/Cesar/Documents/AI%20Proyectos/NesGameStudio/src/project.rs), `src/graphics/mod.rs`
+- **Actividades**:
+  1. Clasificar automáticamente el proyecto en modo `CHR-ROM` (`chr_rom.len() > 0`) o `CHR-RAM` (`chr_rom.is_empty()`).
+  2. En modo `CHR-RAM`, poblar las vistas principales exclusivamente desde los **Sprites OAM activos** y los **Tiles usados en la escena capturada (`chr_8kb`)**, más un detector de cambios en `VRAM` conforme corre el emulador para descubrir nuevos gráficos automáticamente sin que el usuario tenga que capturar manualmente cada pantalla.
+  3. Aislar el escaneo heurístico de `PRG_ROM` (con filtro de entropía y descarte de secuencias de opcodes 6502 comunes como `JSR $20`, `RTS $60`, `LDA $A9/$AD/$BD`, `STA $85/$8D`) dentro de la rama opcional `🔧 Avanzado`.
+- **Criterio de aceptación**:
+  - En *The Legend of Zelda*, el explorador muestra únicamente las entidades reales de la escena y sus bloques activos, eliminando los `12,048` tiles falsos de código.
+
+##### Fase G3 — Reconstrucción Real de Sprites y Metasprites desde `OAM`
+- **Prioridad**: 🔴 Crítica
+- **Archivos**: Nuevo `src/graphics/oam_inspector.rs`, nuevo `src/graphics/metasprite.rs`, [`src/editors/graphics.rs`](file:///c:/Users/Cesar/Documents/AI%20Proyectos/NesGameStudio/src/editors/graphics.rs)
+- **Actividades**:
+  1. Decodificar las 64 entradas de `OAM` (`256 bytes` en `CapturedScene::oam` y en el emulador en vivo): `y`, `tile_id`, `attributes` (`palette 0..3`, `priority`, `flip_h`, `flip_v`), `x`.
+  2. Descartar entradas ocultas (`y >= 0xEF` o fuera de rango).
+  3. Leer el bit 5 (`0x20`) y bit 3 (`0x08`) de `ppu_ctrl_bits` para soportar tanto **modo `8x8`** (seleccionando tabla `$0000` o `$1000`) como **modo `8x16`** (donde el bit 0 de `tile_id` selecciona el banco de patrones y `tile_id & 0xFE` / `(tile_id & 0xFE) + 1` forman las mitades superior e inferior).
+  4. Agrupar entradas `OAM` cercanas espacialmente (`|dx| <= 16`, `|dy| <= 16`) en unidades lógicas **`MetaspriteEntity`** con `bounding_box: (u8, u8, u8, u8)` aunque sus tiles en CHR estén en posiciones no contiguas.
+  5. Renderizar cada `MetaspriteEntity` aplicando la paleta de sprite real (`palette_table[16 + pal_idx * 4 ..]`), transparencia en color `0`, y espejado `FlipH`/`FlipV`.
+- **Criterio de aceptación**:
+  - Un personaje compuesto por tiles no contiguos en `CHR` o con mitades espejadas (`FlipH`) se visualiza y edita como una sola figura completa y coherente.
+
+##### Fase G4 — Interfaz Visual de 4 Paneles, Selección en Escena y Timeline de Animación
+- **Prioridad**: 🟠 Alta
+- **Archivos**: [`src/editors/graphics.rs`](file:///c:/Users/Cesar/Documents/AI%20Proyectos/NesGameStudio/src/editors/graphics.rs), nuevo `src/graphics/animation.rs`
+- **Actividades**:
+  1. Reestructurar [`GraphicsEditorState::ui`](file:///c:/Users/Cesar/Documents/AI%20Proyectos/NesGameStudio/src/editors/graphics.rs) en los **4 paneles visuales**:
+     - **Explorador Izquierdo en Árbol** (`Personajes Activos`, `Escenario Actual`, `Mis Creaciones HD`, `Avanzado`).
+     - **Escena Central Interactiva** con clic directo sobre personajes (`hit-test` contra `MetaspriteEntity::bounding_box`) y controles de reproducción/pausa/+1 frame en la misma vista.
+     - **Inspector Derecho con 3 Pestañas** (`Propiedades`, `Pintar Lienzo Unificado` con `Undo/Redo`, `Reemplazar/Expandir HD`).
+     - **Timeline Inferior de Animación** (`AnimationSequence` detectando cambios de tiles para la misma entidad a lo largo de los frames capturados).
+  2. Implementar el mapeo inverso de píxeles en el lienzo compuesto: pintar en `(px, py)` del personaje actualiza automáticamente el sub-tile correcto (invirtiendo coordenadas si ese sub-sprite tiene `FlipH`/`FlipV`) y dispara el `AutoMemoryMapper`.
+- **Criterio de aceptación**:
+  - Hacer clic sobre un personaje en la escena lo abre en el lienzo derecho; pintar sobre él actualiza inmediatamente el personaje en la escena en vivo y permite `Undo`/`Redo`/`Restaurar`.
+
+##### Fase G5 — Reemplazo Gráfico Real `.PNG`/`.BMP` y Banco de Memoria Extendida Ilimitada
+- **Prioridad**: 🟠 Alta
+- **Archivos**: Nuevo `src/graphics/replacement.rs`, [`src/project.rs`](file:///c:/Users/Cesar/Documents/AI%20Proyectos/NesGameStudio/src/project.rs), [`src/codegen.rs`](file:///c:/Users/Cesar/Documents/AI%20Proyectos/NesGameStudio/src/codegen.rs)
+- **Actividades**:
+  1. Decodificar archivos `.PNG` y `.BMP` reales usando la crate `image` (ya presente en `Cargo.toml`) obteniendo su buffer `RGBA8` (`width`, `height`, `rgba_pixels`).
+  2. Permitir dos modos automáticos al importar o crear un gráfico:
+     - **Modo Adaptativo NES (Opcional)**: Cuantiza automáticamente la imagen a los 3 colores + transparente de la paleta del sprite y actualiza los tiles en memoria.
+     - **Modo Memoria Extendida Ilimitada HD (Por defecto para nuevas creaciones/reemplazos PNG)**: Conserva el gráfico con todos sus colores RGBA y resolución original en el `ExtendedAssetBank`, superponiéndolo automáticamente en la posición `(X, Y)` de la entidad tanto en el estudio como en el `.C` / `.EXE` compilado.
+- **Criterio de aceptación**:
+  - Asignar un `.PNG` a un personaje lo muestra inmediatamente en la escena interactiva y en el ejecutable exportado sin recorte ni límite de 8 KB.
+
+##### Fase G6 — Persistencia Completa en `.ngs.json` y Pruebas Reproducibles
+- **Prioridad**: 🟠 Alta
+- **Archivos**: [`src/project.rs`](file:///c:/Users/Cesar/Documents/AI%20Proyectos/NesGameStudio/src/project.rs), [`src/codegen.rs`](file:///c:/Users/Cesar/Documents/AI%20Proyectos/NesGameStudio/src/codegen.rs)
+- **Actividades**:
+  1. Persistir `tile_patches`, nombres y metadatos de `MetaspriteEntity`, secuencias de `AnimationSequence` y el `ExtendedAssetBank` dentro del archivo `.ngs.json` manteniendo compatibilidad retroactiva (`#[serde(default)]`) con proyectos anteriores.
+  2. Agregar suite de pruebas unitarias reproducibles:
+     - `test_graphic_id_separates_banks_and_sources`: Verifica que editar el mismo `tile_index` en dos bancos distintos no colisiona.
+     - `test_chr_ram_auto_memory_mapper_signature_and_prg_sync`: Verifica que editar un tile en `CHR-RAM` actualiza automáticamente su firma y su offset en `PRG-ROM`, y permite restaurar el original.
+     - `test_oam_8x8_and_8x16_metasprite_reconstruction`: Verifica la reconstrucción exacta de personajes desde `OAM` con `FlipH`/`FlipV` y tiles no contiguos.
+     - `test_png_replacement_and_project_roundtrip`: Verifica decodificación `.PNG` RGBA y guardado/recarga en `.ngs.json`.
+
+---
+
+#### 8.2.5. Plan de Ejecución Incremental (3 Commits Trazables)
+
+| Commit | Alcance | Módulos Impactados | Pruebas de Validación |
+| :---: | :--- | :--- | :--- |
+| **Commit 1** | **`Fase G1 + Fase G2`**: `GraphicId`, `TilePatch` no destructivo, `AutoMemoryMapper` (`CHR-ROM` + `CHR-RAM` firma/PRG) y eliminación del ruido de `PRG_ROM`. | `src/project.rs`, `src/graphics/mod.rs`, `src/codegen.rs` | `test_graphic_id_separates_banks_and_sources`, `test_chr_ram_auto_memory_mapper_signature_and_prg_sync` |
+| **Commit 2** | **`Fase G3 + Fase G4`**: Inspector `OAM` (`8x8`/`8x16`), reconstrucción de `MetaspriteEntity`, **Interfaz Visual de 4 Paneles** con clic en escena, lienzo compuesto con `Undo/Redo` y Timeline de Animación. | `src/graphics/oam_inspector.rs`, `src/graphics/metasprite.rs`, `src/graphics/animation.rs`, `src/editors/graphics.rs` | `test_oam_8x8_and_8x16_metasprite_reconstruction` + compilación limpia sin warnings |
+| **Commit 3** | **`Fase G5 + Fase G6`**: Reemplazo real `.PNG`/`.BMP` RGBA, **Banco de Memoria Extendida Ilimitada** en vista previa y exportador `.C`, y persistencia `.ngs.json`. | `src/graphics/replacement.rs`, `src/project.rs`, `src/codegen.rs`, `src/editors/graphics.rs` | `test_png_replacement_and_project_roundtrip` + `git push origin master` |
+

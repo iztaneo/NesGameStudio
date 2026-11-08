@@ -1,961 +1,1443 @@
-use crate::project::{nes_color_rgb_u8, HdSpriteBinding, NgsProject};
-use eframe::egui::{self, Color32, Pos2, Rect, Sense, Stroke, Vec2};
-use std::collections::VecDeque;
-use std::fs::File;
-use std::io::Write;
-use std::path::Path;
+use crate::graphics::animation::build_entity_animation_sequence;
+use crate::graphics::metasprite::{reconstruct_scene_metasprites, MetaspriteEntity};
+use crate::graphics::replacement::{
+    bake_rgba_into_entity_nes_tiles, encode_uncompressed_png_rgba, load_rgba_image_from_path,
+    register_extended_hd_asset, DecodedRgbaImage,
+};
+use crate::graphics::{GraphicId, GraphicSource};
+use crate::project::{nes_color_rgb_u8, NgsProject};
+use eframe::egui::{self, Color32, ColorImage, Pos2, Rect, RichText, Sense, Stroke, TextureHandle, Vec2};
+use nes_emu_rust::controller::JoypadButtons;
+use std::fs;
 
-#[derive(Copy, Clone, PartialEq, Eq, Debug)]
-pub enum SpriteSizeMode {
-    Character16x32, // 2x4 tiles (16x32 px) — Personajes altos completos
-    Block16x16,     // 2x2 tiles (16x16 px) — Bloques, Ítems, Soldado Agachado
-    Boss32x32,      // 4x4 tiles (32x32 px) — Jefes, Torretas y Red Falcon
-    Tile8x8,        // 1x1 tile (8x8 px)   — Tile individual
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum InspectorTab {
+    PaintCanvas,
+    Properties,
+    ReplaceHd,
 }
 
-impl SpriteSizeMode {
-    pub fn dimensions(&self) -> (usize, usize, usize, usize) {
-        // (tiles_w, tiles_h, width_px, height_px)
-        match self {
-            SpriteSizeMode::Character16x32 => (2, 4, 16, 32),
-            SpriteSizeMode::Block16x16 => (2, 2, 16, 16),
-            SpriteSizeMode::Boss32x32 => (4, 4, 32, 32),
-            SpriteSizeMode::Tile8x8 => (1, 1, 8, 8),
-        }
-    }
-
-    #[allow(dead_code)]
-    pub fn total_tiles(&self) -> usize {
-        let (tw, th, _, _) = self.dimensions();
-        tw * th
-    }
-
-    pub fn name(&self) -> &'static str {
-        match self {
-            SpriteSizeMode::Character16x32 => "🧍 Personaje Completo (16×32)",
-            SpriteSizeMode::Block16x16 => "🧱 Bloque / Metatile (16×16)",
-            SpriteSizeMode::Boss32x32 => "👾 Sprite Grande / Jefe (32×32)",
-            SpriteSizeMode::Tile8x8 => "🔲 Tile Individual (8×8)",
-        }
-    }
-}
-
-#[derive(Copy, Clone, PartialEq, Eq, Debug)]
-pub enum TileLayout {
-    HorizontalRows,  // Fila 0: Tile 0, 1 | Fila 1: Tile 2, 3...
-    VerticalColumns, // Columna 0: Tile 0..3 | Columna 1: Tile 4..7 (Sprites NES 8x16)
-}
-
-#[derive(Copy, Clone, PartialEq, Eq, Debug)]
-pub enum ToolMode {
-    Pencil,
-    Eraser,
-    BucketFill,
+#[derive(Clone, Debug)]
+struct UndoEntry {
+    tile_id: GraphicId,
+    previous_bytes: [u8; 16],
+    new_bytes: [u8; 16],
 }
 
 pub struct GraphicsEditorState {
-    pub selected_tile: usize,
-    pub active_brush_color: u8,
-    pub size_mode: SpriteSizeMode,
-    pub layout: TileLayout,
-    pub tool: ToolMode,
-    pub selected_category: String,
-    pub status_msg: String,
+    pub selected_entity_idx: usize,
+    pub selected_global_tile_idx: Option<usize>,
+    pub editing_single_tile_mode: bool,
+    pub active_color_idx: u8,
+    pub inspector_tab: InspectorTab,
+    pub search_query: String,
+    pub live_running: bool,
+    pub show_oam_boxes: bool,
+    pub show_hd_overlays: bool,
+    pub show_canvas_grid: bool,
+    pub scene_zoom: f32,
+    pub anim_playing: bool,
+    pub anim_fps: u8,
+    pub anim_loop: bool,
+    pub anim_current_frame: usize,
+    pub anim_frame_accum: f32,
+    pub new_creation_name: String,
+    pub new_creation_size: u32,
+    pub status_feedback: String,
+    undo_stack: Vec<UndoEntry>,
+    redo_stack: Vec<UndoEntry>,
+    scene_texture: Option<TextureHandle>,
+    texture_dirty: bool,
 }
 
 impl Default for GraphicsEditorState {
     fn default() -> Self {
         Self {
-            selected_tile: 0,
-            active_brush_color: 3,
-            size_mode: SpriteSizeMode::Character16x32,
-            layout: TileLayout::HorizontalRows,
-            tool: ToolMode::Pencil,
-            selected_category: "TODOS".to_string(),
-            status_msg: String::new(),
+            selected_entity_idx: 0,
+            selected_global_tile_idx: None,
+            editing_single_tile_mode: false,
+            active_color_idx: 1,
+            inspector_tab: InspectorTab::PaintCanvas,
+            search_query: String::new(),
+            live_running: false,
+            show_oam_boxes: true,
+            show_hd_overlays: true,
+            show_canvas_grid: true,
+            scene_zoom: 1.75,
+            anim_playing: false,
+            anim_fps: 6,
+            anim_loop: true,
+            anim_current_frame: 0,
+            anim_frame_accum: 0.0,
+            new_creation_name: "Nuevo_Personaje_HD".to_string(),
+            new_creation_size: 16,
+            status_feedback: String::new(),
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
+            scene_texture: None,
+            texture_dirty: true,
         }
     }
 }
 
 impl GraphicsEditorState {
-    pub fn invalidate_texture(&mut self) {}
+    pub fn invalidate_texture(&mut self) {
+        self.texture_dirty = true;
+    }
 
-    pub fn ui(&mut self, _ctx: &egui::Context, ui: &mut egui::Ui, project: &mut NgsProject) {
+    pub fn ui(&mut self, ctx: &egui::Context, ui: &mut egui::Ui, project: &mut NgsProject) {
         if !project.loaded {
             super::guide::welcome_ui(ui);
             return;
         }
 
-        let total_tiles = project.total_tiles();
-        if total_tiles == 0 {
-            ui.label("Cargando gráficos del juego...");
-            return;
+        // Si el modo "Correr en Vivo" está activo, avanzar el emulador 1 frame y sincronizar firmas CHR-RAM
+        if self.live_running {
+            project.nes_live.step_frame();
+            project.sync_live_chr_ram_signatures();
+            project.nes_live.bus.apu.audio_samples.clear();
+            self.sync_active_scene_from_live(project);
+            self.texture_dirty = true;
+            ctx.request_repaint();
         }
-        if self.selected_tile >= total_tiles {
-            self.selected_tile = 0;
+
+        // Asegurar que exista al menos una escena activa
+        if project.scenes.is_empty() {
+            project.capture_current_live_scene("Escena Inicial (VRAM Activa)".to_string());
+        }
+        let active_sc_idx = project
+            .active_scene_idx
+            .min(project.scenes.len().saturating_sub(1));
+        project.active_scene_idx = active_sc_idx;
+
+        // Reconstruir los personajes y objetos activos desde la OAM de la escena activa (Fase G3)
+        let entities = reconstruct_scene_metasprites(
+            &project.scenes[active_sc_idx].oam,
+            project.scenes[active_sc_idx].ppu_ctrl_bits,
+            &project.entity_custom_names,
+        );
+
+        if !entities.is_empty() && self.selected_entity_idx >= entities.len() {
+            self.selected_entity_idx = 0;
         }
 
-        // BARRA SUPERIOR 1: Selector de Modo de Tamaño y Distribución
-        ui.horizontal_wrapped(|ui| {
-            ui.label(
-                egui::RichText::new("📐 Modo de Edición:")
-                    .strong()
-                    .color(Color32::from_rgb(180, 220, 255)),
-            );
+        // =========================================================================
+        // PANEL 1 (IZQUIERDO): EXPLORADOR DE RECURSOS EN ÁRBOL (Limpio y Amigable)
+        // =========================================================================
+        egui::SidePanel::left("ngs_graphics_left_tree")
+            .resizable(true)
+            .default_width(275.0)
+            .min_width(230.0)
+            .show_inside(ui, |ui| {
+                self.render_left_explorer_panel(ui, project, &entities, active_sc_idx);
+            });
 
-            for mode in [
-                SpriteSizeMode::Character16x32,
-                SpriteSizeMode::Block16x16,
-                SpriteSizeMode::Boss32x32,
-                SpriteSizeMode::Tile8x8,
-            ] {
-                let is_sel = self.size_mode == mode;
-                if ui
-                    .selectable_label(
-                        is_sel,
-                        egui::RichText::new(mode.name())
-                            .strong()
-                            .color(if is_sel { Color32::YELLOW } else { Color32::LIGHT_GRAY }),
-                    )
-                    .clicked()
-                {
-                    self.size_mode = mode;
-                }
-            }
+        // =========================================================================
+        // PANEL 3 (DERECHO): INSPECTOR Y LIENZO UNIFICADO CON 3 PESTAÑAS
+        // =========================================================================
+        egui::SidePanel::right("ngs_graphics_right_inspector")
+            .resizable(true)
+            .default_width(365.0)
+            .min_width(320.0)
+            .show_inside(ui, |ui| {
+                self.render_right_inspector_panel(ui, project, &entities, active_sc_idx);
+            });
 
-            ui.separator();
-            ui.label(egui::RichText::new("Disposición:").small());
-            let is_h = self.layout == TileLayout::HorizontalRows;
-            if ui.selectable_label(is_h, "Horizontal (Filas)").clicked() {
-                self.layout = TileLayout::HorizontalRows;
-            }
-            if ui.selectable_label(!is_h, "Vertical (8×16 NES)").clicked() {
-                self.layout = TileLayout::VerticalColumns;
-            }
+        // =========================================================================
+        // PANEL 4 (CENTRAL INFERIOR): TIMELINE DE ANIMACIÓN Y FOTOGRAMAS
+        // =========================================================================
+        egui::TopBottomPanel::bottom("ngs_graphics_bottom_timeline")
+            .resizable(true)
+            .default_height(145.0)
+            .min_height(120.0)
+            .show_inside(ui, |ui| {
+                self.render_bottom_animation_timeline(ctx, ui, project, &entities, active_sc_idx);
+            });
+
+        // =========================================================================
+        // PANEL 2 (CENTRAL SUPERIOR): ESCENA INTERACTIVA (CLIC PARA SELECCIONAR)
+        // =========================================================================
+        egui::CentralPanel::default().show_inside(ui, |ui| {
+            self.render_center_interactive_scene(ctx, ui, project, &entities, active_sc_idx);
+        });
+    }
+
+    fn render_left_explorer_panel(
+        &mut self,
+        ui: &mut egui::Ui,
+        project: &mut NgsProject,
+        entities: &[MetaspriteEntity],
+        active_sc_idx: usize,
+    ) {
+        ui.heading("📂 Explorador Visual");
+
+        // Selector de Escena Activa
+        ui.horizontal(|ui| {
+            ui.label("📸 Escena:");
+            let current_title = project
+                .scenes
+                .get(active_sc_idx)
+                .map(|s| s.title.clone())
+                .unwrap_or_else(|| "Escena 1".to_string());
+            egui::ComboBox::from_id_salt("scene_selector_combo")
+                .selected_text(format!("#{} {}", active_sc_idx + 1, current_title))
+                .width(175.0)
+                .show_ui(ui, |ui| {
+                    for (idx, sc) in project.scenes.iter().enumerate() {
+                        if ui
+                            .selectable_label(
+                                idx == active_sc_idx,
+                                format!("#{} — {}", idx + 1, sc.title),
+                            )
+                            .clicked()
+                        {
+                            project.active_scene_idx = idx;
+                            // Si la escena tiene save_state, cargarlo en nes_live para continuar desde ahí
+                            if !sc.save_state.is_empty() {
+                                let _ = project.nes_live.from_save_state_bytes(&sc.save_state);
+                            }
+                            self.texture_dirty = true;
+                        }
+                    }
+                });
         });
 
-        // BARRA SUPERIOR 2: Paleta de Color
-        ui.horizontal_wrapped(|ui| {
-            ui.label(
-                egui::RichText::new("🎨 Paleta Activa:")
-                    .strong()
-                    .color(Color32::from_rgb(180, 220, 255)),
+        // Buscador rápido
+        ui.horizontal(|ui| {
+            ui.label("🔍");
+            ui.add(
+                egui::TextEdit::singleline(&mut self.search_query)
+                    .hint_text("Buscar personaje o bloque..."),
             );
-
-            let pal_names = [
-                "Cálida / Rojos",
-                "Fría / Azules",
-                "Fuego / Naranjas",
-                "Naturaleza / Verdes",
-                "Metálica / Grises",
-                "Tierra / Marrones",
-                "Monocromo / HUD",
-                "Mágica / Violeta",
-            ];
-
-            for (idx, name) in pal_names.iter().enumerate() {
-                let is_sel = project.selected_palette == idx;
-                let pal = project.palettes[idx];
-                let [r, g, b] = nes_color_rgb_u8(pal[1]);
-                let btn = egui::Button::new(
-                    egui::RichText::new(*name)
-                        .size(11.0)
-                        .color(if is_sel { Color32::WHITE } else { Color32::LIGHT_GRAY }),
-                )
-                .fill(if is_sel { Color32::from_rgb(r / 2, g / 2, b / 2) } else { Color32::from_rgb(25, 28, 35) })
-                .stroke(if is_sel { Stroke::new(1.8, Color32::YELLOW) } else { Stroke::NONE });
-
-                if ui.add(btn).clicked() {
-                    project.selected_palette = idx;
-                }
+            if !self.search_query.is_empty() && ui.small_button("✖").clicked() {
+                self.search_query.clear();
             }
         });
         ui.separator();
 
-        let active_pal = project.palettes[project.selected_palette];
+        let query_lower = self.search_query.trim().to_lowercase();
 
-        // DOS COLUMNAS: Izquierda = Catálogo Visual Completo, Derecha = Lienzo de Edición Metasprite
-        ui.columns(2, |cols| {
-            // =========================================================================
-            // COLUMNA 1: CATÁLOGO COMPLETO DE GRÁFICOS (TODOS LOS BANCOS Y NIVELES)
-            // =========================================================================
-            cols[0].group(|ui| {
-                ui.horizontal(|ui| {
-                    ui.heading("🖼️ Catálogo de Gráficos del Juego");
-                    ui.label(format!("({} tiles en total)", total_tiles));
-                });
-
-                // Filtro por Categorías / Bancos
-                ui.horizontal_wrapped(|ui| {
-                    ui.label(egui::RichText::new("Filtro:").strong());
-
-                    let mut categories = vec!["TODOS".to_string()];
-                    for t in &project.global_tiles {
-                        if !categories.contains(&t.category) {
-                            categories.push(t.category.clone());
-                        }
+        egui::ScrollArea::vertical()
+            .id_salt("left_tree_scroll")
+            .show(ui, |ui| {
+                // RAMA 1: PERSONAJES Y OBJETOS ACTIVOS EN PANTALLA (OAM)
+                egui::CollapsingHeader::new(
+                    RichText::new(format!(
+                        "🦸 Personajes en Pantalla ({})",
+                        entities.len()
+                    ))
+                    .strong()
+                    .color(Color32::from_rgb(120, 235, 165)),
+                )
+                .default_open(true)
+                .show(ui, |ui| {
+                    if entities.is_empty() {
+                        ui.weak("No hay sprites OAM activos en este fotograma. Usa [▶ Correr] o [⏭ +15 Frames] en la escena central para avanzar a la partida.");
                     }
+                    for (idx, ent) in entities.iter().enumerate() {
+                        if !query_lower.is_empty()
+                            && !ent.name.to_lowercase().contains(&query_lower)
+                            && !ent.signature_key.to_lowercase().contains(&query_lower)
+                        {
+                            continue;
+                        }
+                        let is_selected =
+                            !self.editing_single_tile_mode && self.selected_entity_idx == idx;
 
-                    egui::ComboBox::from_id_salt("cat_filter_combo")
-                        .selected_text(&self.selected_category)
-                        .show_ui(ui, |ui| {
-                            for cat in &categories {
-                                ui.selectable_value(&mut self.selected_category, cat.clone(), cat);
+                        ui.horizontal(|ui| {
+                            // Miniatura reconstruida del personaje
+                            self.draw_entity_mini_preview(ui, project, ent, active_sc_idx, 28.0);
+                            let label_txt = format!(
+                                "{}\nPos ({},{}) • {} tiles",
+                                ent.name,
+                                ent.bbox_x,
+                                ent.bbox_y,
+                                ent.pieces.len()
+                            );
+                            if ui.selectable_label(is_selected, label_txt).clicked() {
+                                self.selected_entity_idx = idx;
+                                self.editing_single_tile_mode = false;
+                                self.anim_current_frame = 0;
                             }
                         });
+                        ui.add_space(2.0);
+                    }
                 });
+
                 ui.add_space(4.0);
 
-                // Obtener los índices de tiles que coinciden con el filtro
-                let matching_indices: Vec<usize> = (0..total_tiles)
-                    .filter(|&i| {
-                        if self.selected_category == "TODOS" {
-                            true
-                        } else {
-                            project.global_tiles[i].category == self.selected_category
-                        }
-                    })
-                    .collect();
-
-                let step = match self.size_mode {
-                    SpriteSizeMode::Character16x32 => 8,
-                    SpriteSizeMode::Block16x16 => 4,
-                    SpriteSizeMode::Boss32x32 => 16,
-                    SpriteSizeMode::Tile8x8 => 1,
-                };
-
-                // Agrupar en entidades según el tamaño seleccionado
-                let mut card_bases = Vec::new();
-                let mut i = 0;
-                while i < matching_indices.len() {
-                    card_bases.push(matching_indices[i]);
-                    i += step;
-                }
-
-                ui.label(
-                    egui::RichText::new(format!(
-                        "Mostrando {} entidades en modo {}",
-                        card_bases.len(),
-                        self.size_mode.name()
+                // RAMA 2: MIS CREACIONES Y GRÁFICOS HD (MEMORIA EXTENDIDA ILIMITADA)
+                egui::CollapsingHeader::new(
+                    RichText::new(format!(
+                        "✨ Memoria Extendida HD ({})",
+                        project.extended_assets.len()
                     ))
-                    .small()
-                    .color(Color32::LIGHT_GRAY),
-                );
-
-                egui::ScrollArea::vertical()
-                    .max_height(540.0)
-                    .auto_shrink([false; 2])
-                    .show(ui, |ui| {
-                        match self.size_mode {
-                            SpriteSizeMode::Character16x32 => {
-                                // Grid de 16x32 (4 columnas de tarjetas de personajes)
-                                let card_w = 48.0;
-                                let card_h = 96.0;
-                                let cols_count = 4;
-                                let rows_count = (card_bases.len() + cols_count - 1) / cols_count;
-                                let total_h = rows_count as f32 * (card_h + 8.0);
-
-                                let (rect, response) = ui.allocate_exact_size(
-                                    Vec2::new(cols_count as f32 * (card_w + 8.0), total_h),
-                                    Sense::click(),
-                                );
-                                let painter = ui.painter_at(rect);
-
-                                let visible_rect = ui.clip_rect();
-                                let start_row = (((visible_rect.min.y - rect.min.y) / (card_h + 8.0)).floor() as isize).max(0) as usize;
-                                let end_row = (((visible_rect.max.y - rect.min.y) / (card_h + 8.0)).ceil() as usize).min(rows_count);
-
-                                for r in start_row..end_row {
-                                    for c in 0..cols_count {
-                                        let item_idx = r * cols_count + c;
-                                        if item_idx >= card_bases.len() {
-                                            break;
-                                        }
-                                        let base_t = card_bases[item_idx];
-                                        let origin = Pos2::new(
-                                            rect.min.x + c as f32 * (card_w + 8.0),
-                                            rect.min.y + r as f32 * (card_h + 8.0),
-                                        );
-                                        let card_rect = Rect::from_min_size(origin, Vec2::new(card_w, card_h));
-
-                                        let is_sel = base_t == self.selected_tile;
-                                        painter.rect_filled(card_rect, 3.0, Color32::from_rgb(14, 16, 22));
-                                        if is_sel {
-                                            painter.rect_stroke(card_rect, 3.0, Stroke::new(2.0, Color32::YELLOW));
-                                        }
-
-                                        draw_metasprite(
-                                            &painter,
-                                            project,
-                                            base_t,
-                                            self.size_mode,
-                                            self.layout,
-                                            origin,
-                                            card_w / 16.0,
-                                            &active_pal,
-                                        );
-
-                                        let label = format!("#{:03X}", base_t);
-                                        painter.text(
-                                            Pos2::new(origin.x + 4.0, origin.y + card_h - 12.0),
-                                            egui::Align2::LEFT_BOTTOM,
-                                            label,
-                                            egui::FontId::proportional(10.0),
-                                            if is_sel { Color32::YELLOW } else { Color32::LIGHT_GRAY },
-                                        );
-                                    }
-                                }
-
-                                if response.clicked() {
-                                    if let Some(pos) = response.interact_pointer_pos() {
-                                        let col = ((pos.x - rect.min.x) / (card_w + 8.0)).floor() as usize;
-                                        let row = ((pos.y - rect.min.y) / (card_h + 8.0)).floor() as usize;
-                                        if col < cols_count {
-                                            let idx = row * cols_count + col;
-                                            if idx < card_bases.len() {
-                                                self.selected_tile = card_bases[idx];
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                            SpriteSizeMode::Block16x16 => {
-                                // Grid de 16x16 (6 columnas)
-                                let card_w = 44.0;
-                                let card_h = 44.0;
-                                let cols_count = 6;
-                                let rows_count = (card_bases.len() + cols_count - 1) / cols_count;
-                                let total_h = rows_count as f32 * (card_h + 6.0);
-
-                                let (rect, response) = ui.allocate_exact_size(
-                                    Vec2::new(cols_count as f32 * (card_w + 6.0), total_h),
-                                    Sense::click(),
-                                );
-                                let painter = ui.painter_at(rect);
-
-                                for (item_idx, &base_t) in card_bases.iter().enumerate() {
-                                    let c = item_idx % cols_count;
-                                    let r = item_idx / cols_count;
-                                    let origin = Pos2::new(
-                                        rect.min.x + c as f32 * (card_w + 6.0),
-                                        rect.min.y + r as f32 * (card_h + 6.0),
-                                    );
-                                    let card_rect = Rect::from_min_size(origin, Vec2::new(card_w, card_h));
-                                    let is_sel = base_t == self.selected_tile;
-
-                                    painter.rect_filled(card_rect, 2.0, Color32::from_rgb(14, 16, 22));
-                                    if is_sel {
-                                        painter.rect_stroke(card_rect, 2.0, Stroke::new(2.0, Color32::YELLOW));
-                                    }
-
-                                    draw_metasprite(
-                                        &painter,
-                                        project,
-                                        base_t,
-                                        self.size_mode,
-                                        self.layout,
-                                        origin,
-                                        card_w / 16.0,
-                                        &active_pal,
+                    .strong()
+                    .color(Color32::from_rgb(255, 210, 110)),
+                )
+                .default_open(true)
+                .show(ui, |ui| {
+                    ui.weak("Sin límite de 8 KB ni de 4 colores NES:");
+                    ui.horizontal(|ui| {
+                        ui.text_edit_singleline(&mut self.new_creation_name);
+                        egui::ComboBox::from_id_salt("new_creation_size_cb")
+                            .selected_text(format!("{}x{}", self.new_creation_size, self.new_creation_size))
+                            .width(64.0)
+                            .show_ui(ui, |ui| {
+                                for sz in [16u32, 24, 32, 48, 64] {
+                                    ui.selectable_value(
+                                        &mut self.new_creation_size,
+                                        sz,
+                                        format!("{}x{}", sz, sz),
                                     );
                                 }
-
-                                if response.clicked() {
-                                    if let Some(pos) = response.interact_pointer_pos() {
-                                        let col = ((pos.x - rect.min.x) / (card_w + 6.0)).floor() as usize;
-                                        let row = ((pos.y - rect.min.y) / (card_h + 6.0)).floor() as usize;
-                                        if col < cols_count {
-                                            let idx = row * cols_count + col;
-                                            if idx < card_bases.len() {
-                                                self.selected_tile = card_bases[idx];
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                            SpriteSizeMode::Boss32x32 => {
-                                // Grid de Jefes 32x32 (3 columnas)
-                                let card_w = 72.0;
-                                let card_h = 72.0;
-                                let cols_count = 3;
-                                let rows_count = (card_bases.len() + cols_count - 1) / cols_count;
-                                let total_h = rows_count as f32 * (card_h + 8.0);
-
-                                let (rect, response) = ui.allocate_exact_size(
-                                    Vec2::new(cols_count as f32 * (card_w + 8.0), total_h),
-                                    Sense::click(),
-                                );
-                                let painter = ui.painter_at(rect);
-
-                                for (item_idx, &base_t) in card_bases.iter().enumerate() {
-                                    let c = item_idx % cols_count;
-                                    let r = item_idx / cols_count;
-                                    let origin = Pos2::new(
-                                        rect.min.x + c as f32 * (card_w + 8.0),
-                                        rect.min.y + r as f32 * (card_h + 8.0),
-                                    );
-                                    let card_rect = Rect::from_min_size(origin, Vec2::new(card_w, card_h));
-                                    let is_sel = base_t == self.selected_tile;
-
-                                    painter.rect_filled(card_rect, 2.0, Color32::from_rgb(14, 16, 22));
-                                    if is_sel {
-                                        painter.rect_stroke(card_rect, 2.0, Stroke::new(2.0, Color32::YELLOW));
-                                    }
-
-                                    draw_metasprite(
-                                        &painter,
-                                        project,
-                                        base_t,
-                                        self.size_mode,
-                                        self.layout,
-                                        origin,
-                                        card_w / 32.0,
-                                        &active_pal,
-                                    );
-                                }
-
-                                if response.clicked() {
-                                    if let Some(pos) = response.interact_pointer_pos() {
-                                        let col = ((pos.x - rect.min.x) / (card_w + 8.0)).floor() as usize;
-                                        let row = ((pos.y - rect.min.y) / (card_h + 8.0)).floor() as usize;
-                                        if col < cols_count {
-                                            let idx = row * cols_count + col;
-                                            if idx < card_bases.len() {
-                                                self.selected_tile = card_bases[idx];
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                            SpriteSizeMode::Tile8x8 => {
-                                // Grid tradicional 8x8 (16 columnas)
-                                let tile_sz = 22.0;
-                                let cols_count = 16usize;
-                                let rows_count = (card_bases.len() + cols_count - 1) / cols_count;
-                                let total_h = rows_count as f32 * tile_sz;
-
-                                let (rect, response) = ui.allocate_exact_size(
-                                    Vec2::new(cols_count as f32 * tile_sz, total_h),
-                                    Sense::click(),
-                                );
-                                let painter = ui.painter_at(rect);
-
-                                for (item_idx, &t_idx) in card_bases.iter().enumerate() {
-                                    let c = item_idx % cols_count;
-                                    let r = item_idx / cols_count;
-                                    let origin = Pos2::new(
-                                        rect.min.x + c as f32 * tile_sz,
-                                        rect.min.y + r as f32 * tile_sz,
-                                    );
-                                    let is_sel = t_idx == self.selected_tile;
-
-                                    draw_tile_8x8(&painter, project, t_idx, origin, tile_sz / 8.0, &active_pal);
-
-                                    let t_rect = Rect::from_min_size(origin, Vec2::splat(tile_sz));
-                                    if is_sel {
-                                        painter.rect_stroke(t_rect, 0.0, Stroke::new(2.2, Color32::YELLOW));
-                                    }
-                                }
-
-                                if response.clicked() {
-                                    if let Some(pos) = response.interact_pointer_pos() {
-                                        let col = ((pos.x - rect.min.x) / tile_sz).floor() as usize;
-                                        let row = ((pos.y - rect.min.y) / tile_sz).floor() as usize;
-                                        if col < cols_count {
-                                            let idx = row * cols_count + col;
-                                            if idx < card_bases.len() {
-                                                self.selected_tile = card_bases[idx];
-                                            }
-                                        }
-                                    }
-                                }
+                            });
+                    });
+                    if ui
+                        .button("➕ Crear Nuevo Gráfico en Memoria Extendida")
+                        .clicked()
+                    {
+                        let sz = self.new_creation_size.max(8);
+                        let mut pixels = vec![0u32; (sz * sz) as usize];
+                        // Dibujar silueta inicial amigable en el centro
+                        for y in 2..(sz - 2) {
+                            for x in 2..(sz - 2) {
+                                pixels[(y * sz + x) as usize] =
+                                    DecodedRgbaImage::pack_rgba(70, 180, 255, 255);
                             }
                         }
-                    });
+                        let img = DecodedRgbaImage {
+                            width: sz,
+                            height: sz,
+                            pixels,
+                        };
+                        let target_id = entities
+                            .get(self.selected_entity_idx)
+                            .and_then(|e| e.pieces.first())
+                            .map(|p| {
+                                GraphicId::new(
+                                    GraphicSource::OamSprite,
+                                    active_sc_idx,
+                                    p.vram_tile_id,
+                                )
+                            });
+                        let new_id = register_extended_hd_asset(
+                            project,
+                            self.new_creation_name.clone(),
+                            target_id,
+                            &img,
+                            None,
+                        );
+                        self.status_feedback = format!(
+                            "Creado activo HD #{} ({}x{} RGBA) en Memoria Extendida Ilimitada.",
+                            new_id, sz, sz
+                        );
+                        self.texture_dirty = true;
+                    }
+
+                    for asset in &project.extended_assets {
+                        ui.horizontal(|ui| {
+                            ui.colored_label(
+                                Color32::from_rgb(255, 220, 130),
+                                format!(
+                                    "🌟 #{} {} ({}x{} RGBA)",
+                                    asset.asset_id, asset.name, asset.width, asset.height
+                                ),
+                            );
+                        });
+                    }
+                });
 
                 ui.add_space(4.0);
-                ui.horizontal(|ui| {
-                    if ui.button("💾 Exportar todo el catálogo a .BMP").clicked() {
-                        if let Some(path) = rfd::FileDialog::new()
-                            .set_file_name(&format!("{}_catalogo_completo.bmp", project.game_title))
-                            .add_filter("Imagen BMP", &["bmp"])
-                            .save_file()
+
+                // RAMA 3: BLOQUES DEL ESCENARIO ACTUAL (Fondo / Tiles no vacíos de la escena activa)
+                egui::CollapsingHeader::new(
+                    RichText::new("🏞️ Bloques del Escenario Actual")
+                        .color(Color32::from_rgb(150, 205, 255)),
+                )
+                .default_open(false)
+                .show(ui, |ui| {
+                    ui.weak("Haz clic en un bloque 8x8 para retocar el suelo, muros o HUD:");
+                    let scene_tiles: Vec<(usize, String, u16)> = project
+                        .global_tiles
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, t)| {
+                            matches!(
+                                t.id.source,
+                                GraphicSource::ChrRamScene
+                                    | GraphicSource::OamSprite
+                                    | GraphicSource::NametableBg
+                            ) && t.id.bank_or_scene == active_sc_idx
+                                && t.bytes.iter().any(|&b| b != 0 && b != 0xFF)
+                                && (query_lower.is_empty()
+                                    || t.label.to_lowercase().contains(&query_lower))
+                        })
+                        .take(128)
+                        .map(|(g_idx, t)| (g_idx, t.label.clone(), t.id.tile_index))
+                        .collect();
+
+                    for (g_idx, label, tile_idx) in scene_tiles {
+                        let sel = self.editing_single_tile_mode
+                            && self.selected_global_tile_idx == Some(g_idx);
+                        if ui
+                            .selectable_label(sel, format!("🧱 Tile #{:03X} — {}", tile_idx, label))
+                            .clicked()
                         {
-                            match export_all_tiles_to_bmp(project, &path) {
-                                Ok(_) => self.status_msg = format!("Catálogo exportado a {}", path.display()),
-                                Err(e) => self.status_msg = format!("Error: {}", e),
-                            }
+                            self.selected_global_tile_idx = Some(g_idx);
+                            self.editing_single_tile_mode = true;
                         }
                     }
-                    if !self.status_msg.is_empty() {
-                        ui.label(&self.status_msg);
-                    }
-                });
-            });
-
-            // =========================================================================
-            // COLUMNA 2: LIENZO DE DIBUJO CONTINUO METASPRITE (16x32, 16x16, 32x32, 8x8)
-            // =========================================================================
-            cols[1].group(|ui| {
-                let (_, _, w_px, h_px) = self.size_mode.dimensions();
-                let current_label = project
-                    .global_tiles
-                    .get(self.selected_tile)
-                    .map(|t| t.label.as_str())
-                    .unwrap_or("Tile");
-
-                ui.heading(format!(
-                    "✏️ Editor de {} (Tile Base #{:03X})",
-                    self.size_mode.name(),
-                    self.selected_tile
-                ));
-                ui.label(egui::RichText::new(current_label).color(Color32::from_rgb(180, 220, 255)));
-                ui.separator();
-
-                // 1. Selector de Herramientas y Colores
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("Herramienta:").strong());
-                    if ui.selectable_label(self.tool == ToolMode::Pencil, "✏️ Lápiz").clicked() {
-                        self.tool = ToolMode::Pencil;
-                    }
-                    if ui.selectable_label(self.tool == ToolMode::Eraser, "🧹 Borrador").clicked() {
-                        self.tool = ToolMode::Eraser;
-                    }
-                    if ui.selectable_label(self.tool == ToolMode::BucketFill, "🪣 Cubeta").clicked() {
-                        self.tool = ToolMode::BucketFill;
-                    }
-
-                    ui.separator();
-                    if ui.button("↔ Voltear X").clicked() {
-                        flip_h_metasprite(project, self.selected_tile, self.size_mode, self.layout);
-                        self.status_msg = "Sprite invertido horizontalmente.".to_string();
-                    }
-                    if ui.button("↕ Voltear Y").clicked() {
-                        flip_v_metasprite(project, self.selected_tile, self.size_mode, self.layout);
-                        self.status_msg = "Sprite invertido verticalmente.".to_string();
-                    }
-                    if ui.button("🗑 Limpiar").clicked() {
-                        clear_metasprite(project, self.selected_tile, self.size_mode, self.layout);
-                        self.status_msg = "Sprite limpiado a color de fondo.".to_string();
-                    }
                 });
 
-                // Selector de Color del Pincel
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("Color:").strong());
-                    for c_idx in 0..4u8 {
-                        let nes_col = active_pal[c_idx as usize];
-                        let [r, g, b] = nes_color_rgb_u8(nes_col);
-                        let col32 = Color32::from_rgb(r, g, b);
-                        let is_sel = self.active_brush_color == c_idx;
+                ui.add_space(4.0);
 
-                        let tag = match c_idx {
-                            0 => "C0 (Fondo)",
-                            1 => "C1 (Piel/Cuerpo)",
-                            2 => "C2 (Ropa/Rifle)",
-                            _ => "C3 (Detalles)",
-                        };
-
-                        let btn = egui::Button::new(
-                            egui::RichText::new(tag)
-                                .size(11.0)
-                                .color(if (r as u16 + g as u16 + b as u16) > 380 { Color32::BLACK } else { Color32::WHITE }),
+                // RAMA 4: VISTA TÉCNICA AVANZADA (Oculta por defecto para no abrumar al usuario)
+                egui::CollapsingHeader::new(
+                    RichText::new("🔧 Avanzado (Bancos CHR / Candidatos PRG)").weak(),
+                )
+                .default_open(false)
+                .show(ui, |ui| {
+                    ui.label(format!(
+                        "Modo de Memoria: {}",
+                        if project.is_chr_ram {
+                            "CHR-RAM Dinámica + Auto-Sync PRG"
+                        } else {
+                            "CHR-ROM por Bancos"
+                        }
+                    ));
+                    ui.label(format!(
+                        "Parches activos: {} tiles | Candidatos PRG filtrados: {}",
+                        project.tile_patches.len(),
+                        project.prg_candidate_tiles.len()
+                    ));
+                    if ui
+                        .checkbox(
+                            &mut project.show_advanced_prg_candidates,
+                            "Mostrar candidatos heurísticos PRG",
                         )
-                        .fill(col32)
-                        .stroke(if is_sel { Stroke::new(2.5, Color32::YELLOW) } else { Stroke::new(1.0, Color32::DARK_GRAY) });
-
-                        if ui.add(btn).clicked() {
-                            self.active_brush_color = c_idx;
-                            self.tool = ToolMode::Pencil;
-                        }
+                        .changed()
+                    {
+                        project.rebuild_global_tile_catalog();
                     }
-                });
 
-                ui.add_space(8.0);
-                ui.label(
-                    egui::RichText::new("Pinta con el mouse directamente sobre la figura completa:")
-                        .small()
-                        .color(Color32::LIGHT_GRAY),
-                );
-
-                // 2. LIENZO INTERACTIVO (Dibuja continuamente sobre toda la figura)
-                let px_scale = match self.size_mode {
-                    SpriteSizeMode::Character16x32 => 16.0,
-                    SpriteSizeMode::Block16x16 => 20.0,
-                    SpriteSizeMode::Boss32x32 => 11.0,
-                    SpriteSizeMode::Tile8x8 => 30.0,
-                };
-
-                let canvas_w = px_scale * w_px as f32;
-                let canvas_h = px_scale * h_px as f32;
-
-                let (c_rect, c_resp) = ui.allocate_exact_size(Vec2::new(canvas_w, canvas_h), Sense::click_and_drag());
-                let c_painter = ui.painter_at(c_rect);
-                c_painter.rect_filled(c_rect, 0.0, Color32::BLACK);
-
-                // Dibujar píxeles actuales del metasprite
-                let sprite_pixels = get_metasprite_pixels(project, self.selected_tile, self.size_mode, self.layout);
-
-                for r in 0..h_px {
-                    for c in 0..w_px {
-                        let v = sprite_pixels[r][c] as usize & 3;
-                        let [cr, cg, cb] = nes_color_rgb_u8(active_pal[v]);
-                        let p_rect = Rect::from_min_size(
-                            Pos2::new(c_rect.min.x + c as f32 * px_scale, c_rect.min.y + r as f32 * px_scale),
-                            Vec2::splat(px_scale - 1.0),
-                        );
-                        c_painter.rect_filled(p_rect, 0.0, Color32::from_rgb(cr, cg, cb));
-                    }
-                }
-
-                // Dibujar líneas de separación de tiles (cada 8 píxeles) para referencia
-                for t_y in 1..(h_px / 8) {
-                    let y = c_rect.min.y + (t_y * 8) as f32 * px_scale;
-                    c_painter.line_segment(
-                        [Pos2::new(c_rect.min.x, y), Pos2::new(c_rect.max.x, y)],
-                        Stroke::new(1.5, Color32::from_rgba_unmultiplied(255, 255, 255, 120)),
-                    );
-                }
-                for t_x in 1..(w_px / 8) {
-                    let x = c_rect.min.x + (t_x * 8) as f32 * px_scale;
-                    c_painter.line_segment(
-                        [Pos2::new(x, c_rect.min.y), Pos2::new(x, c_rect.max.y)],
-                        Stroke::new(1.5, Color32::from_rgba_unmultiplied(255, 255, 255, 120)),
-                    );
-                }
-
-                // Interacción de dibujo con el mouse
-                if c_resp.clicked() || c_resp.dragged() {
-                    if let Some(pos) = c_resp.interact_pointer_pos() {
-                        let col = ((pos.x - c_rect.min.x) / px_scale).floor() as isize;
-                        let row = ((pos.y - c_rect.min.y) / px_scale).floor() as isize;
-
-                        if col >= 0 && col < w_px as isize && row >= 0 && row < h_px as isize {
-                            let draw_color = match self.tool {
-                                ToolMode::Pencil => self.active_brush_color,
-                                ToolMode::Eraser => 0,
-                                ToolMode::BucketFill => self.active_brush_color,
-                            };
-
-                            if self.tool == ToolMode::BucketFill && c_resp.clicked() {
-                                flood_fill_metasprite(
-                                    project,
-                                    self.selected_tile,
-                                    self.size_mode,
-                                    self.layout,
-                                    col as usize,
-                                    row as usize,
-                                    draw_color,
-                                );
-                            } else if self.tool != ToolMode::BucketFill {
-                                set_metasprite_pixel(
-                                    project,
-                                    self.selected_tile,
-                                    self.size_mode,
-                                    self.layout,
-                                    col as usize,
-                                    row as usize,
-                                    draw_color,
-                                );
+                    let chr_rom_tiles: Vec<(usize, String)> = project
+                        .global_tiles
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, t)| t.id.source == GraphicSource::ChrRom)
+                        .take(96)
+                        .map(|(i, t)| (i, t.label.clone()))
+                        .collect();
+                    if !chr_rom_tiles.is_empty() {
+                        ui.separator();
+                        ui.weak("Bancos CHR-ROM (primeros 96 tiles):");
+                        for (g_idx, lbl) in chr_rom_tiles {
+                            let sel = self.editing_single_tile_mode
+                                && self.selected_global_tile_idx == Some(g_idx);
+                            if ui.selectable_label(sel, lbl).clicked() {
+                                self.selected_global_tile_idx = Some(g_idx);
+                                self.editing_single_tile_mode = true;
                             }
                         }
                     }
-                }
-
-                ui.separator();
-                // 3. Remasterización en Alta Definición (Sprites HD)
-                ui.heading("✨ Vincular Remasterización HD (PNG / BMP)");
-                ui.label("Asocia una ilustración en alta definición a este personaje completo:");
-                ui.horizontal(|ui| {
-                    if ui.button("📂 Vincular Imagen HD...").clicked() {
-                        if let Some(path) = rfd::FileDialog::new()
-                            .add_filter("Imagen PNG o BMP", &["png", "bmp"])
-                            .pick_file()
-                        {
-                            project.hd_sprites.insert(
-                                self.selected_tile,
-                                HdSpriteBinding {
-                                    tile_index: self.selected_tile,
-                                    width: w_px as u32,
-                                    height: h_px as u32,
-                                    bmp_or_rgba_path: path.display().to_string(),
-                                    rgba_pixels: vec![0xFF00E5FF; w_px * h_px],
-                                },
-                            );
-                            self.status_msg = format!("Imagen HD vinculada al personaje #{:03X}", self.selected_tile);
-                        }
-                    }
-                    if project.hd_sprites.contains_key(&self.selected_tile) {
-                        if ui.button("🗑 Quitar HD").clicked() {
-                            project.hd_sprites.remove(&self.selected_tile);
-                            self.status_msg = "Remasterización HD eliminada.".to_string();
-                        }
-                    }
                 });
+            });
+    }
 
-                if let Some(hd) = project.hd_sprites.get(&self.selected_tile) {
-                    ui.colored_label(
-                        Color32::from_rgb(0, 220, 255),
-                        format!("✔ HD Activo: {}", hd.bmp_or_rgba_path),
+    fn render_center_interactive_scene(
+        &mut self,
+        ctx: &egui::Context,
+        ui: &mut egui::Ui,
+        project: &mut NgsProject,
+        entities: &[MetaspriteEntity],
+        active_sc_idx: usize,
+    ) {
+        // Barra de control superior de la Escena Interactiva
+        ui.horizontal_wrapped(|ui| {
+            let run_label = if self.live_running {
+                "⏸ Pausar Juego"
+            } else {
+                "▶ Correr en Vivo"
+            };
+            if ui
+                .button(RichText::new(run_label).strong().color(if self.live_running {
+                    Color32::from_rgb(255, 200, 100)
+                } else {
+                    Color32::from_rgb(110, 240, 150)
+                }))
+                .clicked()
+            {
+                self.live_running = !self.live_running;
+            }
+
+            if ui.button("⏭ +1 Frame").clicked() {
+                self.live_running = false;
+                project.nes_live.step_frame();
+                project.sync_live_chr_ram_signatures();
+                project.nes_live.bus.apu.audio_samples.clear();
+                self.sync_active_scene_from_live(project);
+                self.texture_dirty = true;
+            }
+
+            if ui.button("⏭ +15 Frames").clicked() {
+                self.live_running = false;
+                for _ in 0..15 {
+                    project.nes_live.step_frame();
+                    project.sync_live_chr_ram_signatures();
+                    project.nes_live.bus.apu.audio_samples.clear();
+                }
+                self.sync_active_scene_from_live(project);
+                self.texture_dirty = true;
+            }
+
+            if ui.button("🎮 Pulsar START").clicked() {
+                project.nes_live.set_controller1(JoypadButtons::START);
+                for _ in 0..8 {
+                    project.nes_live.step_frame();
+                    project.sync_live_chr_ram_signatures();
+                    project.nes_live.bus.apu.audio_samples.clear();
+                }
+                project.nes_live.set_controller1(JoypadButtons::empty());
+                for _ in 0..20 {
+                    project.nes_live.step_frame();
+                    project.sync_live_chr_ram_signatures();
+                    project.nes_live.bus.apu.audio_samples.clear();
+                }
+                self.sync_active_scene_from_live(project);
+                self.texture_dirty = true;
+            }
+
+            if ui.button("📸 Guardar Nueva Escena").clicked() {
+                let next_n = project.scenes.len() + 1;
+                project.capture_current_live_scene(format!("Escena #{}: Captura", next_n));
+                project.auto_sync_workspace();
+                self.texture_dirty = true;
+            }
+
+            ui.separator();
+            ui.checkbox(&mut self.show_oam_boxes, "☑ Cajas de Personajes");
+            ui.checkbox(&mut self.show_hd_overlays, "☑ Vista HD");
+            ui.label("Zoom:");
+            for z in [1.25f32, 1.75, 2.0] {
+                if ui
+                    .selectable_label((self.scene_zoom - z).abs() < 0.05, format!("{:.2}x", z))
+                    .clicked()
+                {
+                    self.scene_zoom = z;
+                }
+            }
+        });
+
+        ui.weak("💡 Haz clic directamente sobre cualquier personaje u objeto en la pantalla del juego para seleccionarlo y pintarlo en el panel derecho.");
+
+        if !self.status_feedback.is_empty() {
+            ui.colored_label(Color32::from_rgb(125, 230, 175), &self.status_feedback);
+        }
+
+        // Actualizar textura de la escena componiendo los tiles editados y los reemplazos HD
+        if self.texture_dirty || self.scene_texture.is_none() {
+            let composed_rgb = self.compose_scene_preview_rgb(project, entities, active_sc_idx);
+            let img = ColorImage::from_rgb([256, 240], &composed_rgb);
+            self.scene_texture =
+                Some(ctx.load_texture("ngs_interactive_scene", img, egui::TextureOptions::NEAREST));
+            self.texture_dirty = false;
+        }
+
+        let disp_w = 256.0 * self.scene_zoom;
+        let disp_h = 240.0 * self.scene_zoom;
+
+        egui::ScrollArea::both()
+            .id_salt("center_interactive_scene_scroll")
+            .show(ui, |ui| {
+                let (rect, response) =
+                    ui.allocate_exact_size(Vec2::new(disp_w, disp_h), Sense::click());
+
+                if let Some(tex) = &self.scene_texture {
+                    ui.painter().image(
+                        tex.id(),
+                        rect,
+                        Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+                        Color32::WHITE,
                     );
                 }
+
+                // Dibujar cajas OAM interactivas alrededor de cada personaje detectado
+                if self.show_oam_boxes {
+                    for (idx, ent) in entities.iter().enumerate() {
+                        let is_sel =
+                            !self.editing_single_tile_mode && idx == self.selected_entity_idx;
+                        let min_p = Pos2::new(
+                            rect.min.x + (ent.bbox_x as f32) * self.scene_zoom,
+                            rect.min.y + (ent.bbox_y as f32) * self.scene_zoom,
+                        );
+                        let max_p = Pos2::new(
+                            min_p.x + (ent.width as f32) * self.scene_zoom,
+                            min_p.y + (ent.height as f32) * self.scene_zoom,
+                        );
+                        let box_rect = Rect::from_min_max(min_p, max_p);
+                        let stroke_color = if is_sel {
+                            Color32::from_rgb(80, 255, 120)
+                        } else {
+                            Color32::from_rgba_unmultiplied(90, 200, 255, 190)
+                        };
+                        let stroke_width = if is_sel { 2.5 } else { 1.2 };
+                        ui.painter().rect_stroke(
+                            box_rect,
+                            2.0,
+                            Stroke::new(stroke_width, stroke_color),
+                        );
+
+                        if is_sel {
+                            ui.painter().text(
+                                Pos2::new(min_p.x, (min_p.y - 14.0).max(rect.min.y)),
+                                egui::Align2::LEFT_TOP,
+                                &ent.name,
+                                egui::FontId::proportional(12.0),
+                                Color32::from_rgb(80, 255, 120),
+                            );
+                        }
+                    }
+                }
+
+                // Selección por clic directo sobre el personaje en pantalla (Hit-Test OAM)
+                if response.clicked() {
+                    if let Some(pos) = response.interact_pointer_pos() {
+                        let nes_x =
+                            (((pos.x - rect.min.x) / self.scene_zoom).clamp(0.0, 255.0)) as u16;
+                        let nes_y =
+                            (((pos.y - rect.min.y) / self.scene_zoom).clamp(0.0, 239.0)) as u16;
+
+                        if let Some((hit_idx, hit_ent)) = entities
+                            .iter()
+                            .enumerate()
+                            .find(|(_, e)| e.contains_screen_point(nes_x, nes_y))
+                        {
+                            self.selected_entity_idx = hit_idx;
+                            self.editing_single_tile_mode = false;
+                            self.anim_current_frame = 0;
+                            self.status_feedback = format!(
+                                "🎯 Seleccionado en escena: '{}' ({}x{} px en X={}, Y={})",
+                                hit_ent.name,
+                                hit_ent.width,
+                                hit_ent.height,
+                                hit_ent.bbox_x,
+                                hit_ent.bbox_y
+                            );
+                        }
+                    }
+                }
             });
-        });
     }
-}
 
-// =========================================================================
-// FUNCIONES AUXILIARES DE LÓGICA METASPRITE Y DIBUJO
-// =========================================================================
+    fn render_right_inspector_panel(
+        &mut self,
+        ui: &mut egui::Ui,
+        project: &mut NgsProject,
+        entities: &[MetaspriteEntity],
+        active_sc_idx: usize,
+    ) {
+        ui.heading("🔧 Inspector y Editor");
 
-fn calc_tile_index(
-    base_tile: usize,
-    tiles_w: usize,
-    tiles_h: usize,
-    layout: TileLayout,
-    t_col: usize,
-    t_row: usize,
-    total_tiles: usize,
-) -> usize {
-    let offset = match layout {
-        TileLayout::HorizontalRows => t_row * tiles_w + t_col,
-        TileLayout::VerticalColumns => t_col * tiles_h + t_row,
-    };
-    (base_tile + offset).min(total_tiles.saturating_sub(1))
-}
+        // Selector de las 3 Pestañas del Inspector Derecho
+        ui.horizontal(|ui| {
+            ui.selectable_value(
+                &mut self.inspector_tab,
+                InspectorTab::PaintCanvas,
+                "🖌️ Pintar",
+            );
+            ui.selectable_value(
+                &mut self.inspector_tab,
+                InspectorTab::Properties,
+                "📋 Propiedades",
+            );
+            ui.selectable_value(
+                &mut self.inspector_tab,
+                InspectorTab::ReplaceHd,
+                "🖼️ Reemplazar HD",
+            );
+        });
+        ui.separator();
 
-pub fn get_metasprite_pixels(
-    project: &NgsProject,
-    base_tile: usize,
-    size_mode: SpriteSizeMode,
-    layout: TileLayout,
-) -> Vec<Vec<u8>> {
-    let (tw, th, w_px, h_px) = size_mode.dimensions();
-    let total_tiles = project.total_tiles();
-    let mut out = vec![vec![0u8; w_px]; h_px];
+        // Si el usuario seleccionó un bloque individual de fondo/avanzado
+        if self.editing_single_tile_mode {
+            if let Some(g_idx) = self.selected_global_tile_idx {
+                self.render_single_tile_editor(ui, project, g_idx);
+                return;
+            }
+        }
 
-    for t_row in 0..th {
-        for t_col in 0..tw {
-            let t_idx = calc_tile_index(base_tile, tw, th, layout, t_col, t_row, total_tiles);
-            let sub_pixels = project.get_tile_pixels(t_idx);
-            for r in 0..8 {
-                for c in 0..8 {
-                    out[t_row * 8 + r][t_col * 8 + c] = sub_pixels[r][c];
+        let Some(entity) = entities.get(self.selected_entity_idx) else {
+            ui.label("Selecciona un personaje en la Escena Interactiva o elige un bloque del escenario en el árbol izquierdo.");
+            return;
+        };
+
+        match self.inspector_tab {
+            InspectorTab::PaintCanvas => {
+                self.render_entity_paint_canvas_tab(ui, project, entity, active_sc_idx);
+            }
+            InspectorTab::Properties => {
+                self.render_entity_properties_tab(ui, project, entity, active_sc_idx);
+            }
+            InspectorTab::ReplaceHd => {
+                self.render_entity_replace_hd_tab(ui, project, entity, active_sc_idx);
+            }
+        }
+    }
+
+    fn render_entity_paint_canvas_tab(
+        &mut self,
+        ui: &mut egui::Ui,
+        project: &mut NgsProject,
+        entity: &MetaspriteEntity,
+        active_sc_idx: usize,
+    ) {
+        ui.horizontal(|ui| {
+            ui.label(
+                RichText::new(&entity.name)
+                    .strong()
+                    .color(Color32::from_rgb(120, 240, 160)),
+            );
+            ui.weak(format!("({}x{} px)", entity.width, entity.height));
+        });
+
+        // Botones Deshacer / Rehacer / Restaurar Original
+        ui.horizontal(|ui| {
+            if ui
+                .add_enabled(!self.undo_stack.is_empty(), egui::Button::new("↩ Deshacer"))
+                .clicked()
+            {
+                if let Some(entry) = self.undo_stack.pop() {
+                    let orig = project
+                        .tile_patches
+                        .get(&entry.tile_id)
+                        .map(|p| p.original_bytes)
+                        .unwrap_or(entry.previous_bytes);
+                    project.apply_tile_patch_by_id(
+                        entry.tile_id.clone(),
+                        orig,
+                        entry.previous_bytes,
+                    );
+                    self.redo_stack.push(entry);
+                    project.auto_sync_workspace();
+                    self.texture_dirty = true;
+                }
+            }
+            if ui
+                .add_enabled(!self.redo_stack.is_empty(), egui::Button::new("↪ Rehacer"))
+                .clicked()
+            {
+                if let Some(entry) = self.redo_stack.pop() {
+                    let orig = project
+                        .tile_patches
+                        .get(&entry.tile_id)
+                        .map(|p| p.original_bytes)
+                        .unwrap_or(entry.previous_bytes);
+                    project.apply_tile_patch_by_id(entry.tile_id.clone(), orig, entry.new_bytes);
+                    self.undo_stack.push(entry);
+                    project.auto_sync_workspace();
+                    self.texture_dirty = true;
+                }
+            }
+            if ui.button("🔄 Restaurar Original").clicked() {
+                for tile_vram in entity.unique_vram_tiles() {
+                    let id_oam =
+                        GraphicId::new(GraphicSource::OamSprite, active_sc_idx, tile_vram);
+                    let id_sc =
+                        GraphicId::new(GraphicSource::ChrRamScene, active_sc_idx, tile_vram);
+                    project.restore_tile_original(&id_oam);
+                    project.restore_tile_original(&id_sc);
+                }
+                project.auto_sync_workspace();
+                self.texture_dirty = true;
+                self.status_feedback =
+                    format!("Restaurados los gráficos originales de '{}'.", entity.name);
+            }
+        });
+
+        // Selector de Color de la Paleta de Sprite del Personaje
+        let palette_table = project.scenes[active_sc_idx].palette_table;
+        let pal_base = 16 + ((entity.primary_palette as usize) & 3) * 4;
+        ui.separator();
+        ui.label(format!(
+            "🎨 Paleta de Sprite #{} (Elige color para pintar):",
+            entity.primary_palette
+        ));
+        ui.horizontal(|ui| {
+            for c_idx in 0..4u8 {
+                let nes_col = palette_table[(pal_base + (c_idx as usize)) & 31];
+                let [r, g, b] = nes_color_rgb_u8(nes_col);
+                let col32 = if c_idx == 0 {
+                    Color32::from_rgb(35, 35, 45)
+                } else {
+                    Color32::from_rgb(r, g, b)
+                };
+                let is_active = self.active_color_idx == c_idx;
+                let (swatch_rect, resp) =
+                    ui.allocate_exact_size(Vec2::new(66.0, 26.0), Sense::click());
+                ui.painter().rect_filled(swatch_rect, 4.0, col32);
+                ui.painter().rect_stroke(
+                    swatch_rect,
+                    4.0,
+                    Stroke::new(
+                        if is_active { 2.5 } else { 1.0 },
+                        if is_active {
+                            Color32::WHITE
+                        } else {
+                            Color32::GRAY
+                        },
+                    ),
+                );
+                let txt = if c_idx == 0 {
+                    "0: Transp".to_string()
+                } else {
+                    format!("C{} (${:02X})", c_idx, nes_col)
+                };
+                ui.painter().text(
+                    swatch_rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    txt,
+                    egui::FontId::proportional(11.0),
+                    if (r as u16 + g as u16 + b as u16) > 380 && c_idx != 0 {
+                        Color32::BLACK
+                    } else {
+                        Color32::WHITE
+                    },
+                );
+                if resp.clicked() {
+                    self.active_color_idx = c_idx;
+                }
+            }
+        });
+
+        ui.checkbox(
+            &mut self.show_canvas_grid,
+            "Mostrar cuadrícula de píxeles y división 8x8",
+        );
+
+        // LIENZO UNIFICADO DEL PERSONAJE COMPLETO (Mapeo inverso automático respetando FlipH / FlipV)
+        let canvas_rgba = entity.render_rgba_canvas(
+            &project.scenes[active_sc_idx].chr_8kb,
+            &project.scenes[active_sc_idx].palette_table,
+        );
+        let w = (entity.width as usize).max(8);
+        let h = (entity.height as usize).max(8);
+        let max_dim = w.max(h) as f32;
+        let cell_px = (256.0 / max_dim).clamp(6.0, 16.0);
+        let canvas_size = Vec2::new((w as f32) * cell_px, (h as f32) * cell_px);
+
+        let (canvas_rect, canvas_resp) =
+            ui.allocate_exact_size(canvas_size, Sense::click_and_drag());
+
+        for py in 0..h {
+            for px in 0..w {
+                let p_min = Pos2::new(
+                    canvas_rect.min.x + (px as f32) * cell_px,
+                    canvas_rect.min.y + (py as f32) * cell_px,
+                );
+                let p_rect = Rect::from_min_size(p_min, Vec2::splat(cell_px));
+                let [r, g, b, a] = canvas_rgba[py * w + px];
+                let fill = if a == 0 {
+                    if (px + py) % 2 == 0 {
+                        Color32::from_rgb(38, 40, 48)
+                    } else {
+                        Color32::from_rgb(48, 50, 60)
+                    }
+                } else {
+                    Color32::from_rgb(r, g, b)
+                };
+                ui.painter().rect_filled(p_rect, 0.0, fill);
+                if self.show_canvas_grid {
+                    let is_tile_border = px % 8 == 0 || py % 8 == 0;
+                    ui.painter().rect_stroke(
+                        p_rect,
+                        0.0,
+                        Stroke::new(
+                            if is_tile_border { 1.0 } else { 0.4 },
+                            if is_tile_border {
+                                Color32::from_rgba_unmultiplied(120, 210, 255, 110)
+                            } else {
+                                Color32::from_rgba_unmultiplied(255, 255, 255, 28)
+                            },
+                        ),
+                    );
+                }
+            }
+        }
+
+        // Al hacer clic o arrastrar en el lienzo unificado, actualizar automáticamente el sub-tile y el mapa de memoria
+        if canvas_resp.clicked() || canvas_resp.dragged() {
+            if let Some(pos) = canvas_resp.interact_pointer_pos() {
+                let cx = (((pos.x - canvas_rect.min.x) / cell_px).floor() as i32)
+                    .clamp(0, (w as i32) - 1) as u16;
+                let cy = (((pos.y - canvas_rect.min.y) / cell_px).floor() as i32)
+                    .clamp(0, (h as i32) - 1) as u16;
+
+                if let Some((vram_tile, row, col, _pal)) =
+                    entity.map_canvas_pixel_to_vram_tile(cx, cy)
+                {
+                    if let Some(global_idx) = project.global_tiles.iter().position(|t| {
+                        matches!(
+                            t.id.source,
+                            GraphicSource::OamSprite
+                                | GraphicSource::ChrRamScene
+                                | GraphicSource::NametableBg
+                        ) && t.id.bank_or_scene == active_sc_idx
+                            && t.id.tile_index == vram_tile
+                    }) {
+                        let prev_bytes = project.global_tiles[global_idx].bytes;
+                        let tile_id = project.global_tiles[global_idx].id.clone();
+                        project.set_tile_pixel(global_idx, row, col, self.active_color_idx);
+                        let new_bytes = project.global_tiles[global_idx].bytes;
+                        if prev_bytes != new_bytes {
+                            self.undo_stack.push(UndoEntry {
+                                tile_id,
+                                previous_bytes: prev_bytes,
+                                new_bytes,
+                            });
+                            self.redo_stack.clear();
+                            project.auto_sync_workspace();
+                            self.texture_dirty = true;
+                        }
+                    }
+                }
+            }
+        }
+
+        ui.separator();
+        ui.colored_label(
+            Color32::from_rgb(130, 225, 165),
+            "🧠 Mapeo Automático Activo: Al pintar sobre el personaje, la herramienta actualiza automáticamente CHR-ROM / CHR-RAM y sincroniza los offsets en PRG-ROM.",
+        );
+    }
+
+    fn render_entity_properties_tab(
+        &mut self,
+        ui: &mut egui::Ui,
+        project: &mut NgsProject,
+        entity: &MetaspriteEntity,
+        active_sc_idx: usize,
+    ) {
+        ui.label(RichText::new("📋 Propiedades del Personaje / Entidad").strong());
+        let mut custom_name = project
+            .entity_custom_names
+            .get(&entity.signature_key)
+            .cloned()
+            .unwrap_or_else(|| entity.name.clone());
+        ui.horizontal(|ui| {
+            ui.label("Nombre:");
+            if ui.text_edit_singleline(&mut custom_name).changed() {
+                project
+                    .entity_custom_names
+                    .insert(entity.signature_key.clone(), custom_name.clone());
+                project.auto_sync_workspace();
+            }
+        });
+
+        ui.add_space(4.0);
+        ui.label(format!("• Firma de Entidad: {}", entity.signature_key));
+        ui.label(format!(
+            "• Posición en Pantalla: X = {}, Y = {}",
+            entity.bbox_x, entity.bbox_y
+        ));
+        ui.label(format!(
+            "• Dimensiones Compuestas: {} x {} píxeles",
+            entity.width, entity.height
+        ));
+        ui.label(format!(
+            "• Modo de Sprite PPU: {}",
+            if entity.is_8x16_mode {
+                "Sprites 8x16 (Bit 5 PPUCTRL activo)"
+            } else {
+                "Sprites 8x8 estándar"
+            }
+        ));
+        ui.label(format!(
+            "• Sub-bloques 8x8 ensamblados: {} piezas",
+            entity.pieces.len()
+        ));
+
+        let vram_list: Vec<String> = entity
+            .unique_vram_tiles()
+            .iter()
+            .map(|t| format!("${:03X}", t))
+            .collect();
+        ui.label(format!("• Tiles VRAM constitutivos: {}", vram_list.join(", ")));
+
+        // Mostrar cuántos offsets PRG fueron localizados automáticamente por AutoMemoryMapper
+        let mut prg_synced_count = 0usize;
+        for t_id in entity.unique_vram_tiles() {
+            let id_oam = GraphicId::new(GraphicSource::OamSprite, active_sc_idx, t_id);
+            if let Some(p) = project.tile_patches.get(&id_oam) {
+                prg_synced_count += p.auto_prg_offsets.len();
+            }
+        }
+        ui.colored_label(
+            Color32::from_rgb(130, 220, 255),
+            format!(
+                "• Estado AutoMemoryMapper: {} direcciones PRG-ROM sincronizadas automáticamente",
+                prg_synced_count
+            ),
+        );
+
+        ui.separator();
+        if ui
+            .button("💾 Exportar Personaje Ensamblado como .PNG Transparente...")
+            .clicked()
+        {
+            if let Some(save_path) = rfd::FileDialog::new()
+                .set_file_name(&format!("{}.png", entity.signature_key))
+                .add_filter("Imagen PNG", &["png"])
+                .save_file()
+            {
+                let rgba_arr = entity.render_rgba_canvas(
+                    &project.scenes[active_sc_idx].chr_8kb,
+                    &project.scenes[active_sc_idx].palette_table,
+                );
+                let packed: Vec<u32> = rgba_arr
+                    .into_iter()
+                    .map(|[r, g, b, a]| DecodedRgbaImage::pack_rgba(r, g, b, a))
+                    .collect();
+                let png_bytes = encode_uncompressed_png_rgba(
+                    entity.width as u32,
+                    entity.height as u32,
+                    &packed,
+                );
+                match fs::write(&save_path, png_bytes) {
+                    Ok(_) => {
+                        self.status_feedback = format!(
+                            "Personaje exportado como PNG en '{}'.",
+                            save_path.display()
+                        );
+                    }
+                    Err(e) => {
+                        self.status_feedback = format!("Error exportando PNG: {}", e);
+                    }
                 }
             }
         }
     }
-    out
-}
 
-pub fn set_metasprite_pixel(
-    project: &mut NgsProject,
-    base_tile: usize,
-    size_mode: SpriteSizeMode,
-    layout: TileLayout,
-    x: usize,
-    y: usize,
-    color_idx: u8,
-) {
-    let (tw, th, w_px, h_px) = size_mode.dimensions();
-    if x >= w_px || y >= h_px {
-        return;
-    }
-    let total_tiles = project.total_tiles();
-    let t_col = x / 8;
-    let t_row = y / 8;
-    let sub_x = x % 8;
-    let sub_y = y % 8;
+    fn render_entity_replace_hd_tab(
+        &mut self,
+        ui: &mut egui::Ui,
+        project: &mut NgsProject,
+        entity: &MetaspriteEntity,
+        active_sc_idx: usize,
+    ) {
+        ui.label(
+            RichText::new("🖼️ Reemplazar o Expandir con .PNG / .BMP (Memoria Ilimitada)")
+                .strong()
+                .color(Color32::from_rgb(255, 215, 115)),
+        );
+        ui.label("Puedes importar cualquier archivo .PNG o .BMP externo de dos maneras automáticas:");
+        ui.add_space(6.0);
 
-    let target_tile = calc_tile_index(base_tile, tw, th, layout, t_col, t_row, total_tiles);
-    project.set_tile_pixel(target_tile, sub_y, sub_x, color_idx);
-}
-
-pub fn flood_fill_metasprite(
-    project: &mut NgsProject,
-    base_tile: usize,
-    size_mode: SpriteSizeMode,
-    layout: TileLayout,
-    start_x: usize,
-    start_y: usize,
-    new_color: u8,
-) {
-    let (_, _, w_px, h_px) = size_mode.dimensions();
-    let mut pixels = get_metasprite_pixels(project, base_tile, size_mode, layout);
-    let target_color = pixels[start_y][start_x];
-    if target_color == new_color {
-        return;
-    }
-
-    let mut queue = VecDeque::new();
-    queue.push_back((start_x, start_y));
-
-    while let Some((cx, cy)) = queue.pop_front() {
-        if cx >= w_px || cy >= h_px || pixels[cy][cx] != target_color {
-            continue;
+        if ui
+            .button(
+                RichText::new("✨ 1. Vincular .PNG / .BMP en Memoria Extendida HD (Color y Resolución Ilimitados)")
+                    .strong()
+                    .color(Color32::from_rgb(110, 240, 155)),
+            )
+            .clicked()
+        {
+            if let Some(path) = rfd::FileDialog::new()
+                .add_filter("Imagen PNG o BMP", &["png", "bmp"])
+                .pick_file()
+            {
+                match load_rgba_image_from_path(&path) {
+                    Ok(decoded) => {
+                        let first_tile = entity
+                            .pieces
+                            .first()
+                            .map(|p| p.vram_tile_id)
+                            .unwrap_or(0);
+                        let target_id = Some(GraphicId::new(
+                            GraphicSource::OamSprite,
+                            active_sc_idx,
+                            first_tile,
+                        ));
+                        let asset_id = register_extended_hd_asset(
+                            project,
+                            entity.name.clone(),
+                            target_id,
+                            &decoded,
+                            Some(path.display().to_string()),
+                        );
+                        self.texture_dirty = true;
+                        self.status_feedback = format!(
+                            "✔ Imagen '{}' ({}x{} RGBA) vinculada en Memoria Extendida HD (#{}) para '{}'.",
+                            path.display(),
+                            decoded.width,
+                            decoded.height,
+                            asset_id,
+                            entity.name
+                        );
+                    }
+                    Err(e) => {
+                        self.status_feedback = e;
+                    }
+                }
+            }
         }
-        pixels[cy][cx] = new_color;
-        set_metasprite_pixel(project, base_tile, size_mode, layout, cx, cy, new_color);
 
-        if cx > 0 {
-            queue.push_back((cx - 1, cy));
-        }
-        if cx + 1 < w_px {
-            queue.push_back((cx + 1, cy));
-        }
-        if cy > 0 {
-            queue.push_back((cx, cy - 1));
-        }
-        if cy + 1 < h_px {
-            queue.push_back((cx, cy + 1));
-        }
-    }
-}
+        ui.add_space(6.0);
 
-pub fn flip_h_metasprite(
-    project: &mut NgsProject,
-    base_tile: usize,
-    size_mode: SpriteSizeMode,
-    layout: TileLayout,
-) {
-    let (_, _, w_px, h_px) = size_mode.dimensions();
-    let pixels = get_metasprite_pixels(project, base_tile, size_mode, layout);
-    for r in 0..h_px {
-        for c in 0..w_px {
-            let flipped_col = pixels[r][w_px - 1 - c];
-            set_metasprite_pixel(project, base_tile, size_mode, layout, c, r, flipped_col);
+        if ui
+            .button("🎨 2. Adaptar y Pintar .PNG / .BMP Directamente en los Tiles NES del Personaje")
+            .clicked()
+        {
+            if let Some(path) = rfd::FileDialog::new()
+                .add_filter("Imagen PNG o BMP", &["png", "bmp"])
+                .pick_file()
+            {
+                match load_rgba_image_from_path(&path) {
+                    Ok(decoded) => {
+                        bake_rgba_into_entity_nes_tiles(project, entity, active_sc_idx, &decoded);
+                        self.texture_dirty = true;
+                        self.status_feedback = format!(
+                            "✔ Imagen '{}' adaptada automáticamente a los tiles y memoria de '{}'.",
+                            path.display(),
+                            entity.name
+                        );
+                    }
+                    Err(e) => {
+                        self.status_feedback = e;
+                    }
+                }
+            }
         }
-    }
-}
 
-pub fn flip_v_metasprite(
-    project: &mut NgsProject,
-    base_tile: usize,
-    size_mode: SpriteSizeMode,
-    layout: TileLayout,
-) {
-    let (_, _, w_px, h_px) = size_mode.dimensions();
-    let pixels = get_metasprite_pixels(project, base_tile, size_mode, layout);
-    for r in 0..h_px {
-        for c in 0..w_px {
-            let flipped_row = pixels[h_px - 1 - r][c];
-            set_metasprite_pixel(project, base_tile, size_mode, layout, c, r, flipped_row);
-        }
-    }
-}
-
-pub fn clear_metasprite(
-    project: &mut NgsProject,
-    base_tile: usize,
-    size_mode: SpriteSizeMode,
-    layout: TileLayout,
-) {
-    let (_, _, w_px, h_px) = size_mode.dimensions();
-    for r in 0..h_px {
-        for c in 0..w_px {
-            set_metasprite_pixel(project, base_tile, size_mode, layout, c, r, 0);
-        }
-    }
-}
-
-fn draw_metasprite(
-    painter: &egui::Painter,
-    project: &NgsProject,
-    base_tile: usize,
-    size_mode: SpriteSizeMode,
-    layout: TileLayout,
-    origin: Pos2,
-    px_size: f32,
-    pal: &[u8; 4],
-) {
-    let (tw, th, _, _) = size_mode.dimensions();
-    let total_tiles = project.total_tiles();
-    for t_row in 0..th {
-        for t_col in 0..tw {
-            let t_idx = calc_tile_index(base_tile, tw, th, layout, t_col, t_row, total_tiles);
-            let sub_origin = Pos2::new(
-                origin.x + t_col as f32 * 8.0 * px_size,
-                origin.y + t_row as f32 * 8.0 * px_size,
+        ui.separator();
+        let first_tile = entity.pieces.first().map(|p| p.vram_tile_id).unwrap_or(0);
+        let target_id = GraphicId::new(GraphicSource::OamSprite, active_sc_idx, first_tile);
+        if let Some(bound) = project
+            .extended_assets
+            .iter()
+            .find(|a| a.target_graphic_id.as_ref() == Some(&target_id))
+            .cloned()
+        {
+            ui.colored_label(
+                Color32::from_rgb(255, 220, 120),
+                format!(
+                    "🌟 Activo HD vinculado actualmente: #{} '{}' ({}x{} RGBA)",
+                    bound.asset_id, bound.name, bound.width, bound.height
+                ),
             );
-            draw_tile_8x8(painter, project, t_idx, sub_origin, px_size, pal);
+            if ui.button("🗑 Quitar reemplazo HD y volver al sprite NES").clicked() {
+                project
+                    .extended_assets
+                    .retain(|a| a.asset_id != bound.asset_id);
+                project.auto_sync_workspace();
+                self.texture_dirty = true;
+            }
         }
     }
-}
 
-fn draw_tile_8x8(
-    painter: &egui::Painter,
-    project: &NgsProject,
-    tile_idx: usize,
-    origin: Pos2,
-    px_size: f32,
-    pal: &[u8; 4],
-) {
-    let pixels = project.get_tile_pixels(tile_idx);
-    for r in 0..8 {
-        for c in 0..8 {
-            let v = pixels[r][c] as usize & 3;
-            let [cr, cg, cb] = nes_color_rgb_u8(pal[v]);
-            let p_rect = Rect::from_min_size(
-                Pos2::new(origin.x + c as f32 * px_size, origin.y + r as f32 * px_size),
-                Vec2::splat(px_size),
+    fn render_single_tile_editor(
+        &mut self,
+        ui: &mut egui::Ui,
+        project: &mut NgsProject,
+        global_idx: usize,
+    ) {
+        let Some(tile_info) = project.global_tiles.get(global_idx).cloned() else {
+            self.editing_single_tile_mode = false;
+            return;
+        };
+
+        ui.horizontal(|ui| {
+            if ui.button("⬅ Volver al Personaje").clicked() {
+                self.editing_single_tile_mode = false;
+            }
+            ui.label(RichText::new(&tile_info.label).strong());
+        });
+        ui.weak(format!("ID Único: {}", tile_info.id));
+
+        if ui.button("🔄 Restaurar Bloque Original").clicked() {
+            project.restore_tile_original(&tile_info.id);
+            project.auto_sync_workspace();
+            self.texture_dirty = true;
+        }
+
+        let pixels = project.get_tile_pixels(global_idx);
+        let cell_px = 24.0;
+        let (rect, resp) = ui.allocate_exact_size(Vec2::splat(8.0 * cell_px), Sense::click_and_drag());
+        let pal = project.palettes[project.selected_palette.min(7)];
+
+        for r in 0..8 {
+            for c in 0..8 {
+                let c_idx = pixels[r][c] as usize;
+                let [red, green, blue] = nes_color_rgb_u8(pal[c_idx & 3]);
+                let p_min = Pos2::new(rect.min.x + (c as f32) * cell_px, rect.min.y + (r as f32) * cell_px);
+                let p_rect = Rect::from_min_size(p_min, Vec2::splat(cell_px));
+                ui.painter()
+                    .rect_filled(p_rect, 0.0, Color32::from_rgb(red, green, blue));
+                ui.painter().rect_stroke(
+                    p_rect,
+                    0.0,
+                    Stroke::new(0.5, Color32::from_rgba_unmultiplied(255, 255, 255, 45)),
+                );
+            }
+        }
+
+        if resp.clicked() || resp.dragged() {
+            if let Some(pos) = resp.interact_pointer_pos() {
+                let col = (((pos.x - rect.min.x) / cell_px).floor() as i32).clamp(0, 7) as usize;
+                let row = (((pos.y - rect.min.y) / cell_px).floor() as i32).clamp(0, 7) as usize;
+                project.set_tile_pixel(global_idx, row, col, self.active_color_idx);
+                project.auto_sync_workspace();
+                self.texture_dirty = true;
+            }
+        }
+    }
+
+    fn render_bottom_animation_timeline(
+        &mut self,
+        ctx: &egui::Context,
+        ui: &mut egui::Ui,
+        project: &mut NgsProject,
+        entities: &[MetaspriteEntity],
+        active_sc_idx: usize,
+    ) {
+        let Some(selected_entity) = entities.get(self.selected_entity_idx) else {
+            ui.heading("🎞️ Timeline de Animación y Fotogramas");
+            ui.weak("Selecciona un personaje en la escena para ver y editar su tira de animación.");
+            return;
+        };
+
+        let anim_seq = build_entity_animation_sequence(
+            selected_entity,
+            active_sc_idx,
+            &project.scenes,
+            &project.entity_custom_names,
+        );
+
+        // Avanzar previsualización de animación si está en Play
+        if self.anim_playing && anim_seq.frames.len() > 1 {
+            let dt = ctx.input(|i| i.stable_dt).min(0.1);
+            self.anim_frame_accum += dt * (self.anim_fps.max(1) as f32);
+            if self.anim_frame_accum >= 1.0 {
+                self.anim_frame_accum = 0.0;
+                if self.anim_current_frame + 1 < anim_seq.frames.len() {
+                    self.anim_current_frame += 1;
+                } else if self.anim_loop {
+                    self.anim_current_frame = 0;
+                } else {
+                    self.anim_playing = false;
+                }
+            }
+            ctx.request_repaint();
+        }
+
+        ui.horizontal(|ui| {
+            ui.label(
+                RichText::new(format!(
+                    "🎞️ Timeline de '{}' ({} poses detectadas)",
+                    selected_entity.name,
+                    anim_seq.frames.len()
+                ))
+                .strong(),
             );
-            painter.rect_filled(p_rect, 0.0, Color32::from_rgb(cr, cg, cb));
-        }
-    }
-}
-
-fn export_all_tiles_to_bmp(project: &NgsProject, path: &Path) -> Result<(), String> {
-    let total = project.total_tiles();
-    if total == 0 {
-        return Err("No hay tiles para exportar.".to_string());
-    }
-
-    let tiles_per_row = 16usize;
-    let rows = (total + tiles_per_row - 1) / tiles_per_row;
-    let width = (tiles_per_row * 8) as u32;
-    let height = (rows * 8) as u32;
-    let row_bytes = ((width * 3 + 3) / 4) * 4;
-    let data_size = row_bytes * height;
-    let file_size = 54 + data_size;
-
-    let mut f = File::create(path).map_err(|e| e.to_string())?;
-    let mut header = [0u8; 54];
-    header[0] = b'B';
-    header[1] = b'M';
-    header[2..6].copy_from_slice(&file_size.to_le_bytes());
-    header[10..14].copy_from_slice(&54u32.to_le_bytes());
-    header[14..18].copy_from_slice(&40u32.to_le_bytes());
-    header[18..22].copy_from_slice(&width.to_le_bytes());
-    header[22..26].copy_from_slice(&height.to_le_bytes());
-    header[26..28].copy_from_slice(&1u16.to_le_bytes());
-    header[28..30].copy_from_slice(&24u16.to_le_bytes());
-    header[34..38].copy_from_slice(&data_size.to_le_bytes());
-    f.write_all(&header).map_err(|e| e.to_string())?;
-
-    let pal = project.palettes[project.selected_palette];
-
-    for y in (0..height as usize).rev() {
-        let ty = y / 8;
-        let py = y % 8;
-        let mut line = Vec::with_capacity(row_bytes as usize);
-        for x in 0..width as usize {
-            let tx = x / 8;
-            let px = x % 8;
-            let t_idx = ty * tiles_per_row + tx;
-            let v = if t_idx < total {
-                project.get_tile_pixels(t_idx)[py][px] as usize & 3
+            let play_txt = if self.anim_playing {
+                "⏸ Pausar Anim"
             } else {
-                0
+                "▶ Play Anim"
             };
-            let [r, g, b] = nes_color_rgb_u8(pal[v]);
-            line.push(b);
-            line.push(g);
-            line.push(r);
-        }
-        while line.len() % 4 != 0 {
-            line.push(0);
-        }
-        f.write_all(&line).map_err(|e| e.to_string())?;
+            if ui.button(play_txt).clicked() {
+                self.anim_playing = !self.anim_playing;
+            }
+            ui.checkbox(&mut self.anim_loop, "🔁 Loop");
+            ui.add(egui::Slider::new(&mut self.anim_fps, 1..=20).text("FPS"));
+
+            if ui
+                .button("➕ Avanzar +12 Frames y Capturar Pose")
+                .clicked()
+            {
+                for _ in 0..12 {
+                    project.nes_live.step_frame();
+                    project.sync_live_chr_ram_signatures();
+                    project.nes_live.bus.apu.audio_samples.clear();
+                }
+                let n = project.scenes.len() + 1;
+                project.capture_current_live_scene(format!("Pose #{} en Vivo", n));
+                project.auto_sync_workspace();
+                self.texture_dirty = true;
+            }
+        });
+
+        ui.separator();
+
+        // Tira horizontal de fotogramas
+        egui::ScrollArea::horizontal()
+            .id_salt("bottom_timeline_frames_scroll")
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    for (f_idx, frame) in anim_seq.frames.iter().enumerate() {
+                        let is_curr = f_idx == self.anim_current_frame;
+                        ui.vertical(|ui| {
+                            self.draw_entity_mini_preview(
+                                ui,
+                                project,
+                                &frame.entity,
+                                frame.scene_idx,
+                                46.0,
+                            );
+                            if ui
+                                .selectable_label(is_curr, &frame.label)
+                                .clicked()
+                            {
+                                self.anim_current_frame = f_idx;
+                                project.active_scene_idx = frame.scene_idx;
+                                self.texture_dirty = true;
+                            }
+                        });
+                        ui.add_space(8.0);
+                    }
+                });
+            });
     }
-    Ok(())
+
+    fn draw_entity_mini_preview(
+        &self,
+        ui: &mut egui::Ui,
+        project: &NgsProject,
+        entity: &MetaspriteEntity,
+        scene_idx: usize,
+        box_size: f32,
+    ) {
+        let (rect, _) = ui.allocate_exact_size(Vec2::splat(box_size), Sense::hover());
+        ui.painter()
+            .rect_filled(rect, 4.0, Color32::from_rgb(28, 30, 38));
+
+        let Some(sc) = project.scenes.get(scene_idx) else {
+            return;
+        };
+        let rgba = entity.render_rgba_canvas(&sc.chr_8kb, &sc.palette_table);
+        let w = (entity.width as usize).max(8);
+        let h = (entity.height as usize).max(8);
+        let scale = (box_size - 4.0) / (w.max(h) as f32);
+
+        let offset_x = rect.min.x + (box_size - (w as f32) * scale) * 0.5;
+        let offset_y = rect.min.y + (box_size - (h as f32) * scale) * 0.5;
+
+        for py in 0..h {
+            for px in 0..w {
+                let [r, g, b, a] = rgba[py * w + px];
+                if a == 0 {
+                    continue;
+                }
+                let p_min = Pos2::new(offset_x + (px as f32) * scale, offset_y + (py as f32) * scale);
+                let p_rect = Rect::from_min_size(p_min, Vec2::splat(scale.max(1.0)));
+                ui.painter()
+                    .rect_filled(p_rect, 0.0, Color32::from_rgb(r, g, b));
+            }
+        }
+    }
+
+    /// Compone la imagen RGB `256x240` de la escena combinando el framebuffer base con
+    /// las ediciones en vivo de los personajes (`MetaspriteEntity`) y los reemplazos HD de `extended_assets`.
+    fn compose_scene_preview_rgb(
+        &self,
+        project: &NgsProject,
+        entities: &[MetaspriteEntity],
+        active_sc_idx: usize,
+    ) -> Vec<u8> {
+        let Some(sc) = project.scenes.get(active_sc_idx) else {
+            return vec![0u8; 256 * 240 * 3];
+        };
+
+        let mut rgb = if sc.screen_rgb.len() == 256 * 240 * 3 {
+            sc.screen_rgb.clone()
+        } else {
+            vec![20u8; 256 * 240 * 3]
+        };
+
+        // Superponer cada entidad con sus tiles editados (y reemplazo HD si está activo)
+        for ent in entities {
+            let first_tile = ent.pieces.first().map(|p| p.vram_tile_id).unwrap_or(0);
+            let target_id = GraphicId::new(GraphicSource::OamSprite, active_sc_idx, first_tile);
+
+            if self.show_hd_overlays {
+                if let Some(hd_asset) = project
+                    .extended_assets
+                    .iter()
+                    .find(|a| a.target_graphic_id.as_ref() == Some(&target_id))
+                {
+                    let draw_w = (ent.width as u32).max(hd_asset.width.min(64));
+                    let draw_h = (ent.height as u32).max(hd_asset.height.min(64));
+                    for dy in 0..draw_h {
+                        for dx in 0..draw_w {
+                            let sx = (dx * hd_asset.width) / draw_w.max(1);
+                            let sy = (dy * hd_asset.height) / draw_h.max(1);
+                            let px = hd_asset
+                                .rgba_pixels
+                                .get((sy * hd_asset.width + sx) as usize)
+                                .copied()
+                                .unwrap_or(0);
+                            let [r, g, b, a] = DecodedRgbaImage::unpack_rgba(px);
+                            if a < 64 {
+                                continue;
+                            }
+                            let screen_x = (ent.bbox_x as usize) + (dx as usize);
+                            let screen_y = (ent.bbox_y as usize) + (dy as usize);
+                            if screen_x < 256 && screen_y < 240 {
+                                let base = (screen_y * 256 + screen_x) * 3;
+                                rgb[base] = r;
+                                rgb[base + 1] = g;
+                                rgb[base + 2] = b;
+                            }
+                        }
+                    }
+                    continue;
+                }
+            }
+
+            // Si alguno de los tiles de esta entidad tiene un parche activo, redibujarla sobre el framebuffer
+            let has_patched_tile = ent.pieces.iter().any(|p| {
+                let id1 = GraphicId::new(GraphicSource::OamSprite, active_sc_idx, p.vram_tile_id);
+                let id2 =
+                    GraphicId::new(GraphicSource::ChrRamScene, active_sc_idx, p.vram_tile_id);
+                project.tile_patches.contains_key(&id1) || project.tile_patches.contains_key(&id2)
+            });
+
+            if has_patched_tile {
+                let canvas = ent.render_rgba_canvas(&sc.chr_8kb, &sc.palette_table);
+                let w = ent.width as usize;
+                let h = ent.height as usize;
+                for dy in 0..h {
+                    for dx in 0..w {
+                        let [r, g, b, a] = canvas[dy * w + dx];
+                        if a == 0 {
+                            continue;
+                        }
+                        let screen_x = (ent.bbox_x as usize) + dx;
+                        let screen_y = (ent.bbox_y as usize) + dy;
+                        if screen_x < 256 && screen_y < 240 {
+                            let base = (screen_y * 256 + screen_x) * 3;
+                            rgb[base] = r;
+                            rgb[base + 1] = g;
+                            rgb[base + 2] = b;
+                        }
+                    }
+                }
+            }
+        }
+
+        rgb
+    }
+
+    fn sync_active_scene_from_live(&mut self, project: &mut NgsProject) {
+        let active_idx = project.active_scene_idx;
+        if let Some(sc) = project.scenes.get_mut(active_idx) {
+            if let Some(cart) = project.nes_live.bus.cartridge.as_ref() {
+                sc.chr_8kb = cart.chr_mem.clone();
+            }
+            sc.palette_table = project.nes_live.bus.ppu.palette_table;
+            sc.oam = project.nes_live.bus.ppu.oam;
+            sc.ppu_ctrl_bits = project.nes_live.bus.ppu.ctrl.bits();
+            sc.screen_rgb = project.nes_live.bus.ppu.framebuffer.clone();
+            sc.save_state = project.nes_live.to_save_state_bytes();
+        }
+        project.rebuild_global_tile_catalog();
+    }
 }
