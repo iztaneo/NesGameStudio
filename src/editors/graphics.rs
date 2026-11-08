@@ -1,12 +1,18 @@
 use crate::graphics::animation::build_entity_animation_sequence;
-use crate::graphics::metasprite::{reconstruct_scene_metasprites, MetaspriteEntity};
+use crate::graphics::metasprite::{
+    extract_all_loaded_vram_sprite_cards, reconstruct_all_oam_sprites_as_one,
+    reconstruct_individual_oam_sprites, reconstruct_scene_metasprites,
+    resolve_screen_region_to_entity, MetaspriteEntity,
+};
 use crate::graphics::replacement::{
     bake_rgba_into_entity_nes_tiles, encode_uncompressed_png_rgba, load_rgba_image_from_path,
     register_extended_hd_asset, DecodedRgbaImage,
 };
 use crate::graphics::{GraphicId, GraphicSource};
 use crate::project::{nes_color_rgb_u8, NgsProject};
-use eframe::egui::{self, Color32, ColorImage, Pos2, Rect, RichText, Sense, Stroke, TextureHandle, Vec2};
+use eframe::egui::{
+    self, Color32, ColorImage, Pos2, Rect, RichText, Sense, Stroke, TextureHandle, Vec2,
+};
 use nes_emu_rust::controller::JoypadButtons;
 use std::fs;
 
@@ -15,6 +21,17 @@ pub enum InspectorTab {
     PaintCanvas,
     Properties,
     ReplaceHd,
+}
+
+/// Modo de selección sobre la pantalla interactiva (Fase G7).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ScreenSelectionMode {
+    /// Agrupa los sprites OAM cercanos en personajes completos (ej. soldado 26x48).
+    GroupedCharacters,
+    /// Permite seleccionar cada sprite OAM individual (8x8 u 8x16) por separado.
+    IndividualSprites,
+    /// Permite hacer clic o arrastrar un recuadro sobre cualquier parte de la pantalla (fondo, montañas, árboles, rocas o sprites).
+    FreeScreenRegion,
 }
 
 #[derive(Clone, Debug)]
@@ -26,8 +43,13 @@ struct UndoEntry {
 
 pub struct GraphicsEditorState {
     pub selected_entity_idx: usize,
+    /// Entidad personalizada seleccionada libremente en pantalla (región arrastrada, tarjeta VRAM o "Todos los sprites").
+    pub custom_selected_entity: Option<MetaspriteEntity>,
     pub selected_global_tile_idx: Option<usize>,
     pub editing_single_tile_mode: bool,
+    pub selection_mode: ScreenSelectionMode,
+    pub drag_start_nes: Option<(u16, u16)>,
+    pub drag_current_nes: Option<(u16, u16)>,
     pub active_color_idx: u8,
     pub inspector_tab: InspectorTab,
     pub search_query: String,
@@ -54,8 +76,12 @@ impl Default for GraphicsEditorState {
     fn default() -> Self {
         Self {
             selected_entity_idx: 0,
+            custom_selected_entity: None,
             selected_global_tile_idx: None,
             editing_single_tile_mode: false,
+            selection_mode: ScreenSelectionMode::GroupedCharacters,
+            drag_start_nes: None,
+            drag_current_nes: None,
             active_color_idx: 1,
             inspector_tab: InspectorTab::PaintCanvas,
             search_query: String::new(),
@@ -63,7 +89,7 @@ impl Default for GraphicsEditorState {
             show_oam_boxes: true,
             show_hd_overlays: true,
             show_canvas_grid: true,
-            scene_zoom: 1.75,
+            scene_zoom: 1.65,
             anim_playing: false,
             anim_fps: 6,
             anim_loop: true,
@@ -71,7 +97,7 @@ impl Default for GraphicsEditorState {
             anim_frame_accum: 0.0,
             new_creation_name: "Nuevo_Personaje_HD".to_string(),
             new_creation_size: 16,
-            status_feedback: String::new(),
+            status_feedback: "Haz clic sobre cualquier personaje, sprite o elemento del escenario en la pantalla central para editarlo.".to_string(),
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
             scene_texture: None,
@@ -101,7 +127,6 @@ impl GraphicsEditorState {
             ctx.request_repaint();
         }
 
-        // Asegurar que exista al menos una escena activa
         if project.scenes.is_empty() {
             project.capture_current_live_scene("Escena Inicial (VRAM Activa)".to_string());
         }
@@ -110,9 +135,23 @@ impl GraphicsEditorState {
             .min(project.scenes.len().saturating_sub(1));
         project.active_scene_idx = active_sc_idx;
 
-        // Reconstruir los personajes y objetos activos desde la OAM de la escena activa (Fase G3)
-        let entities = reconstruct_scene_metasprites(
-            &project.scenes[active_sc_idx].oam,
+        // Reconstruir entidades OAM según el modo de selección activo (Agrupados vs Individuales)
+        let entities = match self.selection_mode {
+            ScreenSelectionMode::IndividualSprites => reconstruct_individual_oam_sprites(
+                &project.scenes[active_sc_idx].oam,
+                project.scenes[active_sc_idx].ppu_ctrl_bits,
+                &project.entity_custom_names,
+            ),
+            _ => reconstruct_scene_metasprites(
+                &project.scenes[active_sc_idx].oam,
+                project.scenes[active_sc_idx].ppu_ctrl_bits,
+                &project.entity_custom_names,
+            ),
+        };
+
+        // Extraer también todas las tarjetas de sprites y bloques cargadas en la VRAM de esta escena
+        let vram_cards = extract_all_loaded_vram_sprite_cards(
+            &project.scenes[active_sc_idx].chr_8kb,
             project.scenes[active_sc_idx].ppu_ctrl_bits,
             &project.entity_custom_names,
         );
@@ -121,45 +160,202 @@ impl GraphicsEditorState {
             self.selected_entity_idx = 0;
         }
 
+        // Determinar cuál es la entidad activa para el Inspector Derecho y el Timeline
+        let active_entity: Option<MetaspriteEntity> =
+            if let Some(custom) = &self.custom_selected_entity {
+                Some(custom.clone())
+            } else {
+                entities
+                    .get(self.selected_entity_idx)
+                    .cloned()
+                    .or_else(|| vram_cards.first().cloned())
+            };
+
         // =========================================================================
-        // PANEL 1 (IZQUIERDO): EXPLORADOR DE RECURSOS EN ÁRBOL (Limpio y Amigable)
+        // BARRA SUPERIOR DE GALERÍA DE ESCENAS (MINIATURAS VISUALES + AUTO-DESCUBRIDOR SIN JUGAR)
+        // =========================================================================
+        egui::TopBottomPanel::top("ngs_scenes_visual_strip")
+            .resizable(false)
+            .show_inside(ui, |ui| {
+                self.render_top_scene_gallery_strip(ui, project, active_sc_idx);
+            });
+
+        // =========================================================================
+        // PANEL 1 (IZQUIERDO): PASO 1 — CATÁLOGO VISUAL DE LA ESCENA
         // =========================================================================
         egui::SidePanel::left("ngs_graphics_left_tree")
             .resizable(true)
-            .default_width(275.0)
-            .min_width(230.0)
+            .default_width(285.0)
+            .min_width(240.0)
             .show_inside(ui, |ui| {
-                self.render_left_explorer_panel(ui, project, &entities, active_sc_idx);
+                self.render_left_explorer_panel(
+                    ui,
+                    project,
+                    &entities,
+                    &vram_cards,
+                    active_sc_idx,
+                );
             });
 
         // =========================================================================
-        // PANEL 3 (DERECHO): INSPECTOR Y LIENZO UNIFICADO CON 3 PESTAÑAS
+        // PANEL 3 (DERECHO): PASO 3 — PINTAR O REEMPLAZAR LA SELECCIÓN
         // =========================================================================
         egui::SidePanel::right("ngs_graphics_right_inspector")
             .resizable(true)
-            .default_width(365.0)
-            .min_width(320.0)
+            .default_width(370.0)
+            .min_width(325.0)
             .show_inside(ui, |ui| {
-                self.render_right_inspector_panel(ui, project, &entities, active_sc_idx);
+                self.render_right_inspector_panel(
+                    ui,
+                    project,
+                    active_entity.as_ref(),
+                    active_sc_idx,
+                );
             });
 
         // =========================================================================
-        // PANEL 4 (CENTRAL INFERIOR): TIMELINE DE ANIMACIÓN Y FOTOGRAMAS
+        // PANEL 4 (CENTRAL INFERIOR): TIMELINE DE ANIMACIÓN Y POSES
         // =========================================================================
         egui::TopBottomPanel::bottom("ngs_graphics_bottom_timeline")
             .resizable(true)
-            .default_height(145.0)
-            .min_height(120.0)
+            .default_height(132.0)
+            .min_height(110.0)
             .show_inside(ui, |ui| {
-                self.render_bottom_animation_timeline(ctx, ui, project, &entities, active_sc_idx);
+                self.render_bottom_animation_timeline(
+                    ctx,
+                    ui,
+                    project,
+                    active_entity.as_ref(),
+                    active_sc_idx,
+                );
             });
 
         // =========================================================================
-        // PANEL 2 (CENTRAL SUPERIOR): ESCENA INTERACTIVA (CLIC PARA SELECCIONAR)
+        // PANEL 2 (CENTRAL): PASO 2 — PANTALLA INTERACTIVA (SELECCIÓN UNIVERSAL)
         // =========================================================================
         egui::CentralPanel::default().show_inside(ui, |ui| {
-            self.render_center_interactive_scene(ctx, ui, project, &entities, active_sc_idx);
+            self.render_center_interactive_scene(
+                ctx,
+                ui,
+                project,
+                &entities,
+                active_entity.as_ref(),
+                active_sc_idx,
+            );
         });
+    }
+
+    /// Tira visual superior con miniaturas de todas las escenas del juego y botón para descubrir más sin jugar.
+    fn render_top_scene_gallery_strip(
+        &mut self,
+        ui: &mut egui::Ui,
+        project: &mut NgsProject,
+        active_sc_idx: usize,
+    ) {
+        ui.horizontal(|ui| {
+            ui.label(
+                RichText::new("PASO 1 — Escenas del Juego (Haz clic en una miniatura para ver esa pantalla):")
+                    .strong()
+                    .color(Color32::from_rgb(130, 220, 255)),
+            );
+            if ui
+                .button(
+                    RichText::new("+ Auto-Descubrir Mas Escenas y Enemigos (Sin Jugar)")
+                        .strong()
+                        .color(Color32::from_rgb(100, 245, 150)),
+                )
+                .clicked()
+            {
+                let added = project.auto_discover_more_scenes_without_playing();
+                self.custom_selected_entity = None;
+                self.texture_dirty = true;
+                self.status_feedback = format!(
+                    "Se descubrieron y agregaron {} nuevas escenas automaticamente sin necesidad de jugar.",
+                    added
+                );
+            }
+        });
+
+        egui::ScrollArea::horizontal()
+            .id_salt("top_scenes_thumbnails_scroll")
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    let scene_count = project.scenes.len();
+                    for sc_idx in 0..scene_count {
+                        let is_active = sc_idx == active_sc_idx;
+                        let title = project.scenes[sc_idx].title.clone();
+                        ui.vertical(|ui| {
+                            let thumb_w = 72.0;
+                            let thumb_h = 54.0;
+                            let (rect, resp) =
+                                ui.allocate_exact_size(Vec2::new(thumb_w, thumb_h), Sense::click());
+                            self.draw_scene_mini_thumbnail(
+                                ui,
+                                &project.scenes[sc_idx].screen_rgb,
+                                rect,
+                            );
+                            ui.painter().rect_stroke(
+                                rect,
+                                3.0,
+                                Stroke::new(
+                                    if is_active { 2.5 } else { 1.0 },
+                                    if is_active {
+                                        Color32::from_rgb(90, 255, 130)
+                                    } else {
+                                        Color32::GRAY
+                                    },
+                                ),
+                            );
+                            let short_lbl = if title.len() > 22 {
+                                format!("#{} {}...", sc_idx + 1, &title[..19])
+                            } else {
+                                format!("#{} {}", sc_idx + 1, title)
+                            };
+                            let lbl_clicked = ui.selectable_label(is_active, short_lbl).clicked();
+                            if resp.clicked() || lbl_clicked {
+                                project.active_scene_idx = sc_idx;
+                                if !project.scenes[sc_idx].save_state.is_empty() {
+                                    let _ = project
+                                        .nes_live
+                                        .from_save_state_bytes(&project.scenes[sc_idx].save_state);
+                                }
+                                self.custom_selected_entity = None;
+                                self.selected_entity_idx = 0;
+                                self.editing_single_tile_mode = false;
+                                self.texture_dirty = true;
+                            }
+                        });
+                        ui.add_space(6.0);
+                    }
+                });
+            });
+    }
+
+    fn draw_scene_mini_thumbnail(&self, ui: &mut egui::Ui, screen_rgb: &[u8], rect: Rect) {
+        ui.painter()
+            .rect_filled(rect, 3.0, Color32::from_rgb(15, 15, 20));
+        if screen_rgb.len() < 256 * 240 * 3 {
+            return;
+        }
+        // Muestrear en cuadrícula de 32x24 para dibujar la miniatura instantáneamente
+        let cols = 32usize;
+        let rows = 24usize;
+        let cw = rect.width() / (cols as f32);
+        let ch = rect.height() / (rows as f32);
+        for ry in 0..rows {
+            let sy = (ry * 240) / rows;
+            for rx in 0..cols {
+                let sx = (rx * 256) / cols;
+                let off = (sy * 256 + sx) * 3;
+                let r = screen_rgb[off];
+                let g = screen_rgb[off + 1];
+                let b = screen_rgb[off + 2];
+                let p_min = Pos2::new(rect.min.x + (rx as f32) * cw, rect.min.y + (ry as f32) * ch);
+                let p_rect = Rect::from_min_size(p_min, Vec2::new(cw.ceil(), ch.ceil()));
+                ui.painter()
+                    .rect_filled(p_rect, 0.0, Color32::from_rgb(r, g, b));
+            }
+        }
     }
 
     fn render_left_explorer_panel(
@@ -167,72 +363,68 @@ impl GraphicsEditorState {
         ui: &mut egui::Ui,
         project: &mut NgsProject,
         entities: &[MetaspriteEntity],
+        vram_cards: &[MetaspriteEntity],
         active_sc_idx: usize,
     ) {
-        ui.heading("📂 Explorador Visual");
+        ui.label(
+            RichText::new("Catalogo Visual de esta Pantalla")
+                .strong()
+                .size(15.0)
+                .color(Color32::from_rgb(130, 220, 255)),
+        );
 
-        // Selector de Escena Activa
         ui.horizontal(|ui| {
-            ui.label("📸 Escena:");
-            let current_title = project
-                .scenes
-                .get(active_sc_idx)
-                .map(|s| s.title.clone())
-                .unwrap_or_else(|| "Escena 1".to_string());
-            egui::ComboBox::from_id_salt("scene_selector_combo")
-                .selected_text(format!("#{} {}", active_sc_idx + 1, current_title))
-                .width(175.0)
-                .show_ui(ui, |ui| {
-                    for (idx, sc) in project.scenes.iter().enumerate() {
-                        if ui
-                            .selectable_label(
-                                idx == active_sc_idx,
-                                format!("#{} — {}", idx + 1, sc.title),
-                            )
-                            .clicked()
-                        {
-                            project.active_scene_idx = idx;
-                            // Si la escena tiene save_state, cargarlo en nes_live para continuar desde ahí
-                            if !sc.save_state.is_empty() {
-                                let _ = project.nes_live.from_save_state_bytes(&sc.save_state);
-                            }
-                            self.texture_dirty = true;
-                        }
-                    }
-                });
-        });
-
-        // Buscador rápido
-        ui.horizontal(|ui| {
-            ui.label("🔍");
+            ui.label("Buscar:");
             ui.add(
                 egui::TextEdit::singleline(&mut self.search_query)
-                    .hint_text("Buscar personaje o bloque..."),
+                    .hint_text("Filtrar por nombre o tile..."),
             );
-            if !self.search_query.is_empty() && ui.small_button("✖").clicked() {
+            if !self.search_query.is_empty() && ui.small_button("X").clicked() {
                 self.search_query.clear();
             }
         });
-        ui.separator();
 
+        // Botón directo para seleccionar TODOS los sprites activos de la pantalla al mismo tiempo
+        if ui
+            .button(
+                RichText::new("[Seleccionar TODOS los Sprites de la Pantalla]")
+                    .strong()
+                    .color(Color32::from_rgb(255, 220, 110)),
+            )
+            .clicked()
+        {
+            if let Some(all_ent) = reconstruct_all_oam_sprites_as_one(
+                &project.scenes[active_sc_idx].oam,
+                project.scenes[active_sc_idx].ppu_ctrl_bits,
+            ) {
+                self.editing_single_tile_mode = false;
+                self.status_feedback = format!(
+                    "Seleccionados todos los sprites activos de la pantalla ({} piezas).",
+                    all_ent.pieces.len()
+                );
+                self.custom_selected_entity = Some(all_ent);
+            }
+        }
+
+        ui.separator();
         let query_lower = self.search_query.trim().to_lowercase();
 
         egui::ScrollArea::vertical()
             .id_salt("left_tree_scroll")
             .show(ui, |ui| {
-                // RAMA 1: PERSONAJES Y OBJETOS ACTIVOS EN PANTALLA (OAM)
+                // RAMA 1: SPRITES ACTIVOS EN PANTALLA (OAM)
                 egui::CollapsingHeader::new(
                     RichText::new(format!(
-                        "🦸 Personajes en Pantalla ({})",
+                        "1. Sprites Visibles en Pantalla ({})",
                         entities.len()
                     ))
                     .strong()
-                    .color(Color32::from_rgb(120, 235, 165)),
+                    .color(Color32::from_rgb(115, 240, 160)),
                 )
                 .default_open(true)
                 .show(ui, |ui| {
                     if entities.is_empty() {
-                        ui.weak("No hay sprites OAM activos en este fotograma. Usa [▶ Correr] o [⏭ +15 Frames] en la escena central para avanzar a la partida.");
+                        ui.weak("No hay sprites OAM en este cuadro. Elige otra miniatura de escena arriba o usa los grupos VRAM de abajo.");
                     }
                     for (idx, ent) in entities.iter().enumerate() {
                         if !query_lower.is_empty()
@@ -241,14 +433,14 @@ impl GraphicsEditorState {
                         {
                             continue;
                         }
-                        let is_selected =
-                            !self.editing_single_tile_mode && self.selected_entity_idx == idx;
+                        let is_selected = !self.editing_single_tile_mode
+                            && self.custom_selected_entity.is_none()
+                            && self.selected_entity_idx == idx;
 
                         ui.horizontal(|ui| {
-                            // Miniatura reconstruida del personaje
-                            self.draw_entity_mini_preview(ui, project, ent, active_sc_idx, 28.0);
+                            self.draw_entity_mini_preview(ui, project, ent, active_sc_idx, 30.0);
                             let label_txt = format!(
-                                "{}\nPos ({},{}) • {} tiles",
+                                "{}\nPos ({},{}) • {} bloques",
                                 ent.name,
                                 ent.bbox_x,
                                 ent.bbox_y,
@@ -256,6 +448,7 @@ impl GraphicsEditorState {
                             );
                             if ui.selectable_label(is_selected, label_txt).clicked() {
                                 self.selected_entity_idx = idx;
+                                self.custom_selected_entity = None;
                                 self.editing_single_tile_mode = false;
                                 self.anim_current_frame = 0;
                             }
@@ -266,22 +459,67 @@ impl GraphicsEditorState {
 
                 ui.add_space(4.0);
 
-                // RAMA 2: MIS CREACIONES Y GRÁFICOS HD (MEMORIA EXTENDIDA ILIMITADA)
+                // RAMA 2: TODOS LOS SPRITES Y BLOQUES CARGADOS EN LA VRAM DE ESTA ESCENA (Con miniaturas a color)
                 egui::CollapsingHeader::new(
                     RichText::new(format!(
-                        "✨ Memoria Extendida HD ({})",
+                        "2. Todos los Sprites y Bloques de la Escena ({})",
+                        vram_cards.len()
+                    ))
+                    .strong()
+                    .color(Color32::from_rgb(150, 210, 255)),
+                )
+                .default_open(true)
+                .show(ui, |ui| {
+                    ui.weak("Incluye enemigos, proyectiles, poses y bloques de escenario cargados en la memoria de esta pantalla:");
+                    for card in vram_cards {
+                        if !query_lower.is_empty()
+                            && !card.name.to_lowercase().contains(&query_lower)
+                            && !card.signature_key.to_lowercase().contains(&query_lower)
+                        {
+                            continue;
+                        }
+                        let is_sel = self
+                            .custom_selected_entity
+                            .as_ref()
+                            .map(|c| c.signature_key == card.signature_key)
+                            .unwrap_or(false);
+
+                        ui.horizontal(|ui| {
+                            self.draw_entity_mini_preview(ui, project, card, active_sc_idx, 30.0);
+                            if ui.selectable_label(is_sel, &card.name).clicked() {
+                                self.editing_single_tile_mode = false;
+                                self.custom_selected_entity = Some(card.clone());
+                                self.status_feedback = format!(
+                                    "Abierto en el lienzo derecho: '{}'.",
+                                    card.name
+                                );
+                            }
+                        });
+                        ui.add_space(2.0);
+                    }
+                });
+
+                ui.add_space(4.0);
+
+                // RAMA 3: MEMORIA EXTENDIDA HD ILIMITADA
+                egui::CollapsingHeader::new(
+                    RichText::new(format!(
+                        "3. Memoria Extendida HD ({})",
                         project.extended_assets.len()
                     ))
                     .strong()
                     .color(Color32::from_rgb(255, 210, 110)),
                 )
-                .default_open(true)
+                .default_open(false)
                 .show(ui, |ui| {
-                    ui.weak("Sin límite de 8 KB ni de 4 colores NES:");
+                    ui.weak("Crea personajes o gráficos nuevos sin límite de memoria NES:");
                     ui.horizontal(|ui| {
                         ui.text_edit_singleline(&mut self.new_creation_name);
                         egui::ComboBox::from_id_salt("new_creation_size_cb")
-                            .selected_text(format!("{}x{}", self.new_creation_size, self.new_creation_size))
+                            .selected_text(format!(
+                                "{}x{}",
+                                self.new_creation_size, self.new_creation_size
+                            ))
                             .width(64.0)
                             .show_ui(ui, |ui| {
                                 for sz in [16u32, 24, 32, 48, 64] {
@@ -294,12 +532,11 @@ impl GraphicsEditorState {
                             });
                     });
                     if ui
-                        .button("➕ Crear Nuevo Gráfico en Memoria Extendida")
+                        .button("+ Crear Gráfico en Memoria Extendida")
                         .clicked()
                     {
                         let sz = self.new_creation_size.max(8);
                         let mut pixels = vec![0u32; (sz * sz) as usize];
-                        // Dibujar silueta inicial amigable en el centro
                         for y in 2..(sz - 2) {
                             for x in 2..(sz - 2) {
                                 pixels[(y * sz + x) as usize] =
@@ -336,70 +573,26 @@ impl GraphicsEditorState {
                     }
 
                     for asset in &project.extended_assets {
-                        ui.horizontal(|ui| {
-                            ui.colored_label(
-                                Color32::from_rgb(255, 220, 130),
-                                format!(
-                                    "🌟 #{} {} ({}x{} RGBA)",
-                                    asset.asset_id, asset.name, asset.width, asset.height
-                                ),
-                            );
-                        });
+                        ui.colored_label(
+                            Color32::from_rgb(255, 220, 130),
+                            format!(
+                                "* #{} {} ({}x{} RGBA)",
+                                asset.asset_id, asset.name, asset.width, asset.height
+                            ),
+                        );
                     }
                 });
 
                 ui.add_space(4.0);
 
-                // RAMA 3: BLOQUES DEL ESCENARIO ACTUAL (Fondo / Tiles no vacíos de la escena activa)
+                // RAMA 4: AVANZADO (Bancos CHR / Candidatos PRG)
                 egui::CollapsingHeader::new(
-                    RichText::new("🏞️ Bloques del Escenario Actual")
-                        .color(Color32::from_rgb(150, 205, 255)),
-                )
-                .default_open(false)
-                .show(ui, |ui| {
-                    ui.weak("Haz clic en un bloque 8x8 para retocar el suelo, muros o HUD:");
-                    let scene_tiles: Vec<(usize, String, u16)> = project
-                        .global_tiles
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, t)| {
-                            matches!(
-                                t.id.source,
-                                GraphicSource::ChrRamScene
-                                    | GraphicSource::OamSprite
-                                    | GraphicSource::NametableBg
-                            ) && t.id.bank_or_scene == active_sc_idx
-                                && t.bytes.iter().any(|&b| b != 0 && b != 0xFF)
-                                && (query_lower.is_empty()
-                                    || t.label.to_lowercase().contains(&query_lower))
-                        })
-                        .take(128)
-                        .map(|(g_idx, t)| (g_idx, t.label.clone(), t.id.tile_index))
-                        .collect();
-
-                    for (g_idx, label, tile_idx) in scene_tiles {
-                        let sel = self.editing_single_tile_mode
-                            && self.selected_global_tile_idx == Some(g_idx);
-                        if ui
-                            .selectable_label(sel, format!("🧱 Tile #{:03X} — {}", tile_idx, label))
-                            .clicked()
-                        {
-                            self.selected_global_tile_idx = Some(g_idx);
-                            self.editing_single_tile_mode = true;
-                        }
-                    }
-                });
-
-                ui.add_space(4.0);
-
-                // RAMA 4: VISTA TÉCNICA AVANZADA (Oculta por defecto para no abrumar al usuario)
-                egui::CollapsingHeader::new(
-                    RichText::new("🔧 Avanzado (Bancos CHR / Candidatos PRG)").weak(),
+                    RichText::new("4. Avanzado (Bancos CHR / Candidatos PRG)").weak(),
                 )
                 .default_open(false)
                 .show(ui, |ui| {
                     ui.label(format!(
-                        "Modo de Memoria: {}",
+                        "Modo: {}",
                         if project.is_chr_ram {
                             "CHR-RAM Dinámica + Auto-Sync PRG"
                         } else {
@@ -407,7 +600,7 @@ impl GraphicsEditorState {
                         }
                     ));
                     ui.label(format!(
-                        "Parches activos: {} tiles | Candidatos PRG filtrados: {}",
+                        "Parches activos: {} tiles | Candidatos PRG: {}",
                         project.tile_patches.len(),
                         project.prg_candidate_tiles.len()
                     ));
@@ -420,27 +613,6 @@ impl GraphicsEditorState {
                     {
                         project.rebuild_global_tile_catalog();
                     }
-
-                    let chr_rom_tiles: Vec<(usize, String)> = project
-                        .global_tiles
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, t)| t.id.source == GraphicSource::ChrRom)
-                        .take(96)
-                        .map(|(i, t)| (i, t.label.clone()))
-                        .collect();
-                    if !chr_rom_tiles.is_empty() {
-                        ui.separator();
-                        ui.weak("Bancos CHR-ROM (primeros 96 tiles):");
-                        for (g_idx, lbl) in chr_rom_tiles {
-                            let sel = self.editing_single_tile_mode
-                                && self.selected_global_tile_idx == Some(g_idx);
-                            if ui.selectable_label(sel, lbl).clicked() {
-                                self.selected_global_tile_idx = Some(g_idx);
-                                self.editing_single_tile_mode = true;
-                            }
-                        }
-                    }
                 });
             });
     }
@@ -451,14 +623,58 @@ impl GraphicsEditorState {
         ui: &mut egui::Ui,
         project: &mut NgsProject,
         entities: &[MetaspriteEntity],
+        active_entity: Option<&MetaspriteEntity>,
         active_sc_idx: usize,
     ) {
-        // Barra de control superior de la Escena Interactiva
+        // Encabezado PASO 2 y selector del Modo de Selección en Pantalla
+        ui.horizontal_wrapped(|ui| {
+            ui.label(
+                RichText::new("PASO 2 — Modo de Selección en Pantalla:")
+                    .strong()
+                    .color(Color32::from_rgb(130, 220, 255)),
+            );
+            if ui
+                .selectable_label(
+                    self.selection_mode == ScreenSelectionMode::GroupedCharacters
+                        && self.custom_selected_entity.is_none(),
+                    "[1. Personaje Completo]",
+                )
+                .clicked()
+            {
+                self.selection_mode = ScreenSelectionMode::GroupedCharacters;
+                self.custom_selected_entity = None;
+                self.editing_single_tile_mode = false;
+            }
+            if ui
+                .selectable_label(
+                    self.selection_mode == ScreenSelectionMode::IndividualSprites
+                        && self.custom_selected_entity.is_none(),
+                    "[2. Cada Sprite Individual]",
+                )
+                .clicked()
+            {
+                self.selection_mode = ScreenSelectionMode::IndividualSprites;
+                self.custom_selected_entity = None;
+                self.editing_single_tile_mode = false;
+            }
+            if ui
+                .selectable_label(
+                    self.selection_mode == ScreenSelectionMode::FreeScreenRegion,
+                    "[3. Seleccionar Cualquier Zona / Fondo (Clic o Arrastrar)]",
+                )
+                .clicked()
+            {
+                self.selection_mode = ScreenSelectionMode::FreeScreenRegion;
+                self.editing_single_tile_mode = false;
+            }
+        });
+
+        // Controles de ejecución opcionales y vista
         ui.horizontal_wrapped(|ui| {
             let run_label = if self.live_running {
-                "⏸ Pausar Juego"
+                "[Pausar Juego]"
             } else {
-                "▶ Correr en Vivo"
+                "[Correr en Vivo]"
             };
             if ui
                 .button(RichText::new(run_label).strong().color(if self.live_running {
@@ -471,7 +687,7 @@ impl GraphicsEditorState {
                 self.live_running = !self.live_running;
             }
 
-            if ui.button("⏭ +1 Frame").clicked() {
+            if ui.button("+1 Frame").clicked() {
                 self.live_running = false;
                 project.nes_live.step_frame();
                 project.sync_live_chr_ram_signatures();
@@ -480,7 +696,7 @@ impl GraphicsEditorState {
                 self.texture_dirty = true;
             }
 
-            if ui.button("⏭ +15 Frames").clicked() {
+            if ui.button("+15 Frames").clicked() {
                 self.live_running = false;
                 for _ in 0..15 {
                     project.nes_live.step_frame();
@@ -491,7 +707,7 @@ impl GraphicsEditorState {
                 self.texture_dirty = true;
             }
 
-            if ui.button("🎮 Pulsar START").clicked() {
+            if ui.button("Pulsar START").clicked() {
                 project.nes_live.set_controller1(JoypadButtons::START);
                 for _ in 0..8 {
                     project.nes_live.step_frame();
@@ -508,18 +724,11 @@ impl GraphicsEditorState {
                 self.texture_dirty = true;
             }
 
-            if ui.button("📸 Guardar Nueva Escena").clicked() {
-                let next_n = project.scenes.len() + 1;
-                project.capture_current_live_scene(format!("Escena #{}: Captura", next_n));
-                project.auto_sync_workspace();
-                self.texture_dirty = true;
-            }
-
             ui.separator();
-            ui.checkbox(&mut self.show_oam_boxes, "☑ Cajas de Personajes");
-            ui.checkbox(&mut self.show_hd_overlays, "☑ Vista HD");
+            ui.checkbox(&mut self.show_oam_boxes, "Ver Cajas de Sprites");
+            ui.checkbox(&mut self.show_hd_overlays, "Ver Reemplazos HD");
             ui.label("Zoom:");
-            for z in [1.25f32, 1.75, 2.0] {
+            for z in [1.35f32, 1.65, 2.0] {
                 if ui
                     .selectable_label((self.scene_zoom - z).abs() < 0.05, format!("{:.2}x", z))
                     .clicked()
@@ -529,15 +738,11 @@ impl GraphicsEditorState {
             }
         });
 
-        ui.weak("💡 Haz clic directamente sobre cualquier personaje u objeto en la pantalla del juego para seleccionarlo y pintarlo en el panel derecho.");
+        ui.colored_label(Color32::from_rgb(125, 230, 175), &self.status_feedback);
 
-        if !self.status_feedback.is_empty() {
-            ui.colored_label(Color32::from_rgb(125, 230, 175), &self.status_feedback);
-        }
-
-        // Actualizar textura de la escena componiendo los tiles editados y los reemplazos HD
         if self.texture_dirty || self.scene_texture.is_none() {
-            let composed_rgb = self.compose_scene_preview_rgb(project, entities, active_sc_idx);
+            let composed_rgb =
+                self.compose_scene_preview_rgb(project, entities, active_entity, active_sc_idx);
             let img = ColorImage::from_rgb([256, 240], &composed_rgb);
             self.scene_texture =
                 Some(ctx.load_texture("ngs_interactive_scene", img, egui::TextureOptions::NEAREST));
@@ -551,7 +756,7 @@ impl GraphicsEditorState {
             .id_salt("center_interactive_scene_scroll")
             .show(ui, |ui| {
                 let (rect, response) =
-                    ui.allocate_exact_size(Vec2::new(disp_w, disp_h), Sense::click());
+                    ui.allocate_exact_size(Vec2::new(disp_w, disp_h), Sense::click_and_drag());
 
                 if let Some(tex) = &self.scene_texture {
                     ui.painter().image(
@@ -562,11 +767,12 @@ impl GraphicsEditorState {
                     );
                 }
 
-                // Dibujar cajas OAM interactivas alrededor de cada personaje detectado
+                // Dibujar cajas alrededor de los sprites OAM
                 if self.show_oam_boxes {
                     for (idx, ent) in entities.iter().enumerate() {
-                        let is_sel =
-                            !self.editing_single_tile_mode && idx == self.selected_entity_idx;
+                        let is_sel = !self.editing_single_tile_mode
+                            && self.custom_selected_entity.is_none()
+                            && idx == self.selected_entity_idx;
                         let min_p = Pos2::new(
                             rect.min.x + (ent.bbox_x as f32) * self.scene_zoom,
                             rect.min.y + (ent.bbox_y as f32) * self.scene_zoom,
@@ -581,49 +787,161 @@ impl GraphicsEditorState {
                         } else {
                             Color32::from_rgba_unmultiplied(90, 200, 255, 190)
                         };
-                        let stroke_width = if is_sel { 2.5 } else { 1.2 };
                         ui.painter().rect_stroke(
                             box_rect,
                             2.0,
-                            Stroke::new(stroke_width, stroke_color),
+                            Stroke::new(if is_sel { 2.5 } else { 1.2 }, stroke_color),
                         );
-
-                        if is_sel {
-                            ui.painter().text(
-                                Pos2::new(min_p.x, (min_p.y - 14.0).max(rect.min.y)),
-                                egui::Align2::LEFT_TOP,
-                                &ent.name,
-                                egui::FontId::proportional(12.0),
-                                Color32::from_rgb(80, 255, 120),
-                            );
-                        }
                     }
                 }
 
-                // Selección por clic directo sobre el personaje en pantalla (Hit-Test OAM)
-                if response.clicked() {
+                // Si hay una entidad o región de pantalla personalizada seleccionada, enmarcarla en amarillo/verde
+                if let Some(custom_ent) = &self.custom_selected_entity {
+                    if custom_ent.width > 0 && custom_ent.height > 0 {
+                        let min_p = Pos2::new(
+                            rect.min.x + (custom_ent.bbox_x as f32) * self.scene_zoom,
+                            rect.min.y + (custom_ent.bbox_y as f32) * self.scene_zoom,
+                        );
+                        let max_p = Pos2::new(
+                            min_p.x + (custom_ent.width as f32) * self.scene_zoom,
+                            min_p.y + (custom_ent.height as f32) * self.scene_zoom,
+                        );
+                        ui.painter().rect_stroke(
+                            Rect::from_min_max(min_p, max_p),
+                            2.0,
+                            Stroke::new(2.5, Color32::from_rgb(255, 225, 80)),
+                        );
+                    }
+                }
+
+                // Dibujar el rectángulo de arrastre en vivo cuando el usuario arrastra sobre la pantalla
+                if let (Some((sx, sy)), Some((cx, cy))) =
+                    (self.drag_start_nes, self.drag_current_nes)
+                {
+                    let x0 = sx.min(cx) as f32;
+                    let y0 = sy.min(cy) as f32;
+                    let x1 = (sx.max(cx) + 8).min(256) as f32;
+                    let y1 = (sy.max(cy) + 8).min(240) as f32;
+                    let drag_rect = Rect::from_min_max(
+                        Pos2::new(
+                            rect.min.x + x0 * self.scene_zoom,
+                            rect.min.y + y0 * self.scene_zoom,
+                        ),
+                        Pos2::new(
+                            rect.min.x + x1 * self.scene_zoom,
+                            rect.min.y + y1 * self.scene_zoom,
+                        ),
+                    );
+                    ui.painter().rect_stroke(
+                        drag_rect,
+                        2.0,
+                        Stroke::new(2.0, Color32::from_rgb(255, 240, 100)),
+                    );
+                }
+
+                // Manejo de Clic o Arrastre Universal sobre la pantalla 256x240
+                if response.drag_started() {
+                    if let Some(pos) = response.interact_pointer_pos() {
+                        let nx =
+                            (((pos.x - rect.min.x) / self.scene_zoom).clamp(0.0, 255.0)) as u16;
+                        let ny =
+                            (((pos.y - rect.min.y) / self.scene_zoom).clamp(0.0, 239.0)) as u16;
+                        self.drag_start_nes = Some((nx, ny));
+                        self.drag_current_nes = Some((nx, ny));
+                    }
+                }
+                if response.dragged() {
+                    if let Some(pos) = response.interact_pointer_pos() {
+                        let nx =
+                            (((pos.x - rect.min.x) / self.scene_zoom).clamp(0.0, 255.0)) as u16;
+                        let ny =
+                            (((pos.y - rect.min.y) / self.scene_zoom).clamp(0.0, 239.0)) as u16;
+                        self.drag_current_nes = Some((nx, ny));
+                    }
+                }
+                if response.drag_stopped() {
+                    if let (Some((sx, sy)), Some((ex, ey))) =
+                        (self.drag_start_nes.take(), self.drag_current_nes.take())
+                    {
+                        let rx = sx.min(ex);
+                        let ry = sy.min(ey);
+                        let rw = sx.max(ex).saturating_sub(rx) + 8;
+                        let rh = sy.max(ey).saturating_sub(ry) + 8;
+                        let sc = &project.scenes[active_sc_idx];
+                        if let Some(region_ent) = resolve_screen_region_to_entity(
+                            &sc.screen_rgb,
+                            &sc.chr_8kb,
+                            &sc.palette_table,
+                            sc.ppu_ctrl_bits,
+                            rx,
+                            ry,
+                            rw.min(64),
+                            rh.min(64),
+                        ) {
+                            self.editing_single_tile_mode = false;
+                            self.status_feedback = format!(
+                                "Seleccionada región de pantalla: {} ({} bloques 8x8 listos para pintar a la derecha).",
+                                region_ent.name,
+                                region_ent.pieces.len()
+                            );
+                            self.custom_selected_entity = Some(region_ent);
+                        }
+                    }
+                } else if response.clicked() {
+                    self.drag_start_nes = None;
+                    self.drag_current_nes = None;
                     if let Some(pos) = response.interact_pointer_pos() {
                         let nes_x =
                             (((pos.x - rect.min.x) / self.scene_zoom).clamp(0.0, 255.0)) as u16;
                         let nes_y =
                             (((pos.y - rect.min.y) / self.scene_zoom).clamp(0.0, 239.0)) as u16;
 
-                        if let Some((hit_idx, hit_ent)) = entities
-                            .iter()
-                            .enumerate()
-                            .find(|(_, e)| e.contains_screen_point(nes_x, nes_y))
+                        // Si no estamos en modo región libre, primero verificar si hizo clic sobre un sprite OAM
+                        let hit_oam = if self.selection_mode
+                            != ScreenSelectionMode::FreeScreenRegion
                         {
+                            entities
+                                .iter()
+                                .enumerate()
+                                .find(|(_, e)| e.contains_screen_point(nes_x, nes_y))
+                        } else {
+                            None
+                        };
+
+                        if let Some((hit_idx, hit_ent)) = hit_oam {
                             self.selected_entity_idx = hit_idx;
+                            self.custom_selected_entity = None;
                             self.editing_single_tile_mode = false;
                             self.anim_current_frame = 0;
                             self.status_feedback = format!(
-                                "🎯 Seleccionado en escena: '{}' ({}x{} px en X={}, Y={})",
+                                "Seleccionado en pantalla: '{}' ({}x{} px en X={}, Y={})",
                                 hit_ent.name,
                                 hit_ent.width,
                                 hit_ent.height,
                                 hit_ent.bbox_x,
                                 hit_ent.bbox_y
                             );
+                        } else {
+                            // Si hizo clic en CUALQUIER otra parte de la pantalla (montañas, árboles, rocas, suelo, HUD),
+                            // resolver automáticamente ese bloque 16x16 del escenario y abrirlo a la derecha!
+                            let sc = &project.scenes[active_sc_idx];
+                            if let Some(bg_ent) = resolve_screen_region_to_entity(
+                                &sc.screen_rgb,
+                                &sc.chr_8kb,
+                                &sc.palette_table,
+                                sc.ppu_ctrl_bits,
+                                nes_x,
+                                nes_y,
+                                16,
+                                16,
+                            ) {
+                                self.editing_single_tile_mode = false;
+                                self.status_feedback = format!(
+                                    "Seleccionado elemento de pantalla en (X={}, Y={}) — puedes pintarlo a la derecha o arrastrar un recuadro más grande.",
+                                    bg_ent.bbox_x, bg_ent.bbox_y
+                                );
+                                self.custom_selected_entity = Some(bg_ent);
+                            }
                         }
                     }
                 }
@@ -634,32 +952,35 @@ impl GraphicsEditorState {
         &mut self,
         ui: &mut egui::Ui,
         project: &mut NgsProject,
-        entities: &[MetaspriteEntity],
+        active_entity: Option<&MetaspriteEntity>,
         active_sc_idx: usize,
     ) {
-        ui.heading("🔧 Inspector y Editor");
+        ui.label(
+            RichText::new("PASO 3 — Pinta o Reemplaza tu Selección")
+                .strong()
+                .size(15.0)
+                .color(Color32::from_rgb(130, 220, 255)),
+        );
 
-        // Selector de las 3 Pestañas del Inspector Derecho
         ui.horizontal(|ui| {
             ui.selectable_value(
                 &mut self.inspector_tab,
                 InspectorTab::PaintCanvas,
-                "🖌️ Pintar",
+                "[1. Pintar Dibujo]",
             );
             ui.selectable_value(
                 &mut self.inspector_tab,
                 InspectorTab::Properties,
-                "📋 Propiedades",
+                "[2. Propiedades / PNG]",
             );
             ui.selectable_value(
                 &mut self.inspector_tab,
                 InspectorTab::ReplaceHd,
-                "🖼️ Reemplazar HD",
+                "[3. Reemplazar HD]",
             );
         });
         ui.separator();
 
-        // Si el usuario seleccionó un bloque individual de fondo/avanzado
         if self.editing_single_tile_mode {
             if let Some(g_idx) = self.selected_global_tile_idx {
                 self.render_single_tile_editor(ui, project, g_idx);
@@ -667,8 +988,8 @@ impl GraphicsEditorState {
             }
         }
 
-        let Some(entity) = entities.get(self.selected_entity_idx) else {
-            ui.label("Selecciona un personaje en la Escena Interactiva o elige un bloque del escenario en el árbol izquierdo.");
+        let Some(entity) = active_entity else {
+            ui.label("Haz clic sobre cualquier personaje o elemento en la pantalla central para editarlo aquí.");
             return;
         };
 
@@ -701,10 +1022,9 @@ impl GraphicsEditorState {
             ui.weak(format!("({}x{} px)", entity.width, entity.height));
         });
 
-        // Botones Deshacer / Rehacer / Restaurar Original
         ui.horizontal(|ui| {
             if ui
-                .add_enabled(!self.undo_stack.is_empty(), egui::Button::new("↩ Deshacer"))
+                .add_enabled(!self.undo_stack.is_empty(), egui::Button::new("Deshacer"))
                 .clicked()
             {
                 if let Some(entry) = self.undo_stack.pop() {
@@ -724,7 +1044,7 @@ impl GraphicsEditorState {
                 }
             }
             if ui
-                .add_enabled(!self.redo_stack.is_empty(), egui::Button::new("↪ Rehacer"))
+                .add_enabled(!self.redo_stack.is_empty(), egui::Button::new("Rehacer"))
                 .clicked()
             {
                 if let Some(entry) = self.redo_stack.pop() {
@@ -739,7 +1059,7 @@ impl GraphicsEditorState {
                     self.texture_dirty = true;
                 }
             }
-            if ui.button("🔄 Restaurar Original").clicked() {
+            if ui.button("Restaurar Original").clicked() {
                 for tile_vram in entity.unique_vram_tiles() {
                     let id_oam =
                         GraphicId::new(GraphicSource::OamSprite, active_sc_idx, tile_vram);
@@ -755,26 +1075,36 @@ impl GraphicsEditorState {
             }
         });
 
-        // Selector de Color de la Paleta de Sprite del Personaje
+        // Selector de Color de la Paleta Activa
         let palette_table = project.scenes[active_sc_idx].palette_table;
-        let pal_base = 16 + ((entity.primary_palette as usize) & 3) * 4;
+        let is_bg_pal = entity
+            .pieces
+            .first()
+            .map(|p| (p.palette_idx & 0x80) != 0)
+            .unwrap_or(false);
+        let pal_base = if is_bg_pal {
+            ((entity.primary_palette as usize) & 3) * 4
+        } else {
+            16 + ((entity.primary_palette as usize) & 3) * 4
+        };
         ui.separator();
-        ui.label(format!(
-            "🎨 Paleta de Sprite #{} (Elige color para pintar):",
-            entity.primary_palette
-        ));
+        ui.label("1. Elige un color y luego haz clic o arrastra sobre el dibujo grande:");
         ui.horizontal(|ui| {
             for c_idx in 0..4u8 {
-                let nes_col = palette_table[(pal_base + (c_idx as usize)) & 31];
+                let nes_col = if c_idx == 0 {
+                    palette_table[0]
+                } else {
+                    palette_table[(pal_base + (c_idx as usize)) & 31]
+                };
                 let [r, g, b] = nes_color_rgb_u8(nes_col);
-                let col32 = if c_idx == 0 {
+                let col32 = if c_idx == 0 && !is_bg_pal {
                     Color32::from_rgb(35, 35, 45)
                 } else {
                     Color32::from_rgb(r, g, b)
                 };
                 let is_active = self.active_color_idx == c_idx;
                 let (swatch_rect, resp) =
-                    ui.allocate_exact_size(Vec2::new(66.0, 26.0), Sense::click());
+                    ui.allocate_exact_size(Vec2::new(68.0, 26.0), Sense::click());
                 ui.painter().rect_filled(swatch_rect, 4.0, col32);
                 ui.painter().rect_stroke(
                     swatch_rect,
@@ -788,7 +1118,7 @@ impl GraphicsEditorState {
                         },
                     ),
                 );
-                let txt = if c_idx == 0 {
+                let txt = if c_idx == 0 && !is_bg_pal {
                     "0: Transp".to_string()
                 } else {
                     format!("C{} (${:02X})", c_idx, nes_col)
@@ -798,7 +1128,7 @@ impl GraphicsEditorState {
                     egui::Align2::CENTER_CENTER,
                     txt,
                     egui::FontId::proportional(11.0),
-                    if (r as u16 + g as u16 + b as u16) > 380 && c_idx != 0 {
+                    if (r as u16 + g as u16 + b as u16) > 380 && (c_idx != 0 || is_bg_pal) {
                         Color32::BLACK
                     } else {
                         Color32::WHITE
@@ -812,10 +1142,9 @@ impl GraphicsEditorState {
 
         ui.checkbox(
             &mut self.show_canvas_grid,
-            "Mostrar cuadrícula de píxeles y división 8x8",
+            "Mostrar cuadrícula de píxeles y bloques 8x8",
         );
 
-        // LIENZO UNIFICADO DEL PERSONAJE COMPLETO (Mapeo inverso automático respetando FlipH / FlipV)
         let canvas_rgba = entity.render_rgba_canvas(
             &project.scenes[active_sc_idx].chr_8kb,
             &project.scenes[active_sc_idx].palette_table,
@@ -823,7 +1152,7 @@ impl GraphicsEditorState {
         let w = (entity.width as usize).max(8);
         let h = (entity.height as usize).max(8);
         let max_dim = w.max(h) as f32;
-        let cell_px = (256.0 / max_dim).clamp(6.0, 16.0);
+        let cell_px = (264.0 / max_dim).clamp(4.0, 16.0);
         let canvas_size = Vec2::new((w as f32) * cell_px, (h as f32) * cell_px);
 
         let (canvas_rect, canvas_resp) =
@@ -865,7 +1194,6 @@ impl GraphicsEditorState {
             }
         }
 
-        // Al hacer clic o arrastrar en el lienzo unificado, actualizar automáticamente el sub-tile y el mapa de memoria
         if canvas_resp.clicked() || canvas_resp.dragged() {
             if let Some(pos) = canvas_resp.interact_pointer_pos() {
                 let cx = (((pos.x - canvas_rect.min.x) / cell_px).floor() as i32)
@@ -907,7 +1235,7 @@ impl GraphicsEditorState {
         ui.separator();
         ui.colored_label(
             Color32::from_rgb(130, 225, 165),
-            "🧠 Mapeo Automático Activo: Al pintar sobre el personaje, la herramienta actualiza automáticamente CHR-ROM / CHR-RAM y sincroniza los offsets en PRG-ROM.",
+            "Mapeo Automático Activo: Al pintar aquí, la herramienta actualiza automáticamente CHR-ROM / CHR-RAM y sincroniza PRG-ROM.",
         );
     }
 
@@ -918,7 +1246,7 @@ impl GraphicsEditorState {
         entity: &MetaspriteEntity,
         active_sc_idx: usize,
     ) {
-        ui.label(RichText::new("📋 Propiedades del Personaje / Entidad").strong());
+        ui.label(RichText::new("Propiedades de la Selección").strong());
         let mut custom_name = project
             .entity_custom_names
             .get(&entity.signature_key)
@@ -935,7 +1263,7 @@ impl GraphicsEditorState {
         });
 
         ui.add_space(4.0);
-        ui.label(format!("• Firma de Entidad: {}", entity.signature_key));
+        ui.label(format!("• Clave de Identificación: {}", entity.signature_key));
         ui.label(format!(
             "• Posición en Pantalla: X = {}, Y = {}",
             entity.bbox_x, entity.bbox_y
@@ -945,15 +1273,7 @@ impl GraphicsEditorState {
             entity.width, entity.height
         ));
         ui.label(format!(
-            "• Modo de Sprite PPU: {}",
-            if entity.is_8x16_mode {
-                "Sprites 8x16 (Bit 5 PPUCTRL activo)"
-            } else {
-                "Sprites 8x8 estándar"
-            }
-        ));
-        ui.label(format!(
-            "• Sub-bloques 8x8 ensamblados: {} piezas",
+            "• Bloques 8x8 ensamblados: {} piezas",
             entity.pieces.len()
         ));
 
@@ -964,25 +1284,9 @@ impl GraphicsEditorState {
             .collect();
         ui.label(format!("• Tiles VRAM constitutivos: {}", vram_list.join(", ")));
 
-        // Mostrar cuántos offsets PRG fueron localizados automáticamente por AutoMemoryMapper
-        let mut prg_synced_count = 0usize;
-        for t_id in entity.unique_vram_tiles() {
-            let id_oam = GraphicId::new(GraphicSource::OamSprite, active_sc_idx, t_id);
-            if let Some(p) = project.tile_patches.get(&id_oam) {
-                prg_synced_count += p.auto_prg_offsets.len();
-            }
-        }
-        ui.colored_label(
-            Color32::from_rgb(130, 220, 255),
-            format!(
-                "• Estado AutoMemoryMapper: {} direcciones PRG-ROM sincronizadas automáticamente",
-                prg_synced_count
-            ),
-        );
-
         ui.separator();
         if ui
-            .button("💾 Exportar Personaje Ensamblado como .PNG Transparente...")
+            .button("Exportar Selección como Archivo .PNG Transparente...")
             .clicked()
         {
             if let Some(save_path) = rfd::FileDialog::new()
@@ -1006,7 +1310,7 @@ impl GraphicsEditorState {
                 match fs::write(&save_path, png_bytes) {
                     Ok(_) => {
                         self.status_feedback = format!(
-                            "Personaje exportado como PNG en '{}'.",
+                            "Selección exportada como PNG en '{}'.",
                             save_path.display()
                         );
                     }
@@ -1026,16 +1330,16 @@ impl GraphicsEditorState {
         active_sc_idx: usize,
     ) {
         ui.label(
-            RichText::new("🖼️ Reemplazar o Expandir con .PNG / .BMP (Memoria Ilimitada)")
+            RichText::new("Reemplazar o Expandir con .PNG / .BMP (Memoria Ilimitada)")
                 .strong()
                 .color(Color32::from_rgb(255, 215, 115)),
         );
-        ui.label("Puedes importar cualquier archivo .PNG o .BMP externo de dos maneras automáticas:");
+        ui.label("Importa cualquier imagen .PNG o .BMP externa de dos maneras automáticas:");
         ui.add_space(6.0);
 
         if ui
             .button(
-                RichText::new("✨ 1. Vincular .PNG / .BMP en Memoria Extendida HD (Color y Resolución Ilimitados)")
+                RichText::new("1. Vincular .PNG / .BMP en Memoria Extendida HD (Sin límite de color/tamaño)")
                     .strong()
                     .color(Color32::from_rgb(110, 240, 155)),
             )
@@ -1066,7 +1370,7 @@ impl GraphicsEditorState {
                         );
                         self.texture_dirty = true;
                         self.status_feedback = format!(
-                            "✔ Imagen '{}' ({}x{} RGBA) vinculada en Memoria Extendida HD (#{}) para '{}'.",
+                            "Imagen '{}' ({}x{} RGBA) vinculada en Memoria Extendida HD (#{}) para '{}'.",
                             path.display(),
                             decoded.width,
                             decoded.height,
@@ -1084,7 +1388,7 @@ impl GraphicsEditorState {
         ui.add_space(6.0);
 
         if ui
-            .button("🎨 2. Adaptar y Pintar .PNG / .BMP Directamente en los Tiles NES del Personaje")
+            .button("2. Adaptar y Pintar .PNG / .BMP Automáticamente en los Tiles NES")
             .clicked()
         {
             if let Some(path) = rfd::FileDialog::new()
@@ -1096,7 +1400,7 @@ impl GraphicsEditorState {
                         bake_rgba_into_entity_nes_tiles(project, entity, active_sc_idx, &decoded);
                         self.texture_dirty = true;
                         self.status_feedback = format!(
-                            "✔ Imagen '{}' adaptada automáticamente a los tiles y memoria de '{}'.",
+                            "Imagen '{}' adaptada automáticamente a los tiles y memoria de '{}'.",
                             path.display(),
                             entity.name
                         );
@@ -1120,11 +1424,11 @@ impl GraphicsEditorState {
             ui.colored_label(
                 Color32::from_rgb(255, 220, 120),
                 format!(
-                    "🌟 Activo HD vinculado actualmente: #{} '{}' ({}x{} RGBA)",
+                    "Activo HD vinculado actualmente: #{} '{}' ({}x{} RGBA)",
                     bound.asset_id, bound.name, bound.width, bound.height
                 ),
             );
-            if ui.button("🗑 Quitar reemplazo HD y volver al sprite NES").clicked() {
+            if ui.button("Quitar reemplazo HD y volver al gráfico NES").clicked() {
                 project
                     .extended_assets
                     .retain(|a| a.asset_id != bound.asset_id);
@@ -1146,14 +1450,14 @@ impl GraphicsEditorState {
         };
 
         ui.horizontal(|ui| {
-            if ui.button("⬅ Volver al Personaje").clicked() {
+            if ui.button("<- Volver a la Selección").clicked() {
                 self.editing_single_tile_mode = false;
             }
             ui.label(RichText::new(&tile_info.label).strong());
         });
         ui.weak(format!("ID Único: {}", tile_info.id));
 
-        if ui.button("🔄 Restaurar Bloque Original").clicked() {
+        if ui.button("Restaurar Bloque Original").clicked() {
             project.restore_tile_original(&tile_info.id);
             project.auto_sync_workspace();
             self.texture_dirty = true;
@@ -1161,14 +1465,18 @@ impl GraphicsEditorState {
 
         let pixels = project.get_tile_pixels(global_idx);
         let cell_px = 24.0;
-        let (rect, resp) = ui.allocate_exact_size(Vec2::splat(8.0 * cell_px), Sense::click_and_drag());
+        let (rect, resp) =
+            ui.allocate_exact_size(Vec2::splat(8.0 * cell_px), Sense::click_and_drag());
         let pal = project.palettes[project.selected_palette.min(7)];
 
         for r in 0..8 {
             for c in 0..8 {
                 let c_idx = pixels[r][c] as usize;
                 let [red, green, blue] = nes_color_rgb_u8(pal[c_idx & 3]);
-                let p_min = Pos2::new(rect.min.x + (c as f32) * cell_px, rect.min.y + (r as f32) * cell_px);
+                let p_min = Pos2::new(
+                    rect.min.x + (c as f32) * cell_px,
+                    rect.min.y + (r as f32) * cell_px,
+                );
                 let p_rect = Rect::from_min_size(p_min, Vec2::splat(cell_px));
                 ui.painter()
                     .rect_filled(p_rect, 0.0, Color32::from_rgb(red, green, blue));
@@ -1196,12 +1504,12 @@ impl GraphicsEditorState {
         ctx: &egui::Context,
         ui: &mut egui::Ui,
         project: &mut NgsProject,
-        entities: &[MetaspriteEntity],
+        active_entity: Option<&MetaspriteEntity>,
         active_sc_idx: usize,
     ) {
-        let Some(selected_entity) = entities.get(self.selected_entity_idx) else {
-            ui.heading("🎞️ Timeline de Animación y Fotogramas");
-            ui.weak("Selecciona un personaje en la escena para ver y editar su tira de animación.");
+        let Some(selected_entity) = active_entity else {
+            ui.label(RichText::new("Timeline de Animación y Fotogramas").strong());
+            ui.weak("Selecciona un personaje en la escena para ver sus poses de animación.");
             return;
         };
 
@@ -1212,7 +1520,6 @@ impl GraphicsEditorState {
             &project.entity_custom_names,
         );
 
-        // Avanzar previsualización de animación si está en Play
         if self.anim_playing && anim_seq.frames.len() > 1 {
             let dt = ctx.input(|i| i.stable_dt).min(0.1);
             self.anim_frame_accum += dt * (self.anim_fps.max(1) as f32);
@@ -1232,42 +1539,26 @@ impl GraphicsEditorState {
         ui.horizontal(|ui| {
             ui.label(
                 RichText::new(format!(
-                    "🎞️ Timeline de '{}' ({} poses detectadas)",
+                    "Timeline de '{}' ({} poses detectadas en las escenas)",
                     selected_entity.name,
                     anim_seq.frames.len()
                 ))
                 .strong(),
             );
             let play_txt = if self.anim_playing {
-                "⏸ Pausar Anim"
+                "[Pausar Anim]"
             } else {
-                "▶ Play Anim"
+                "[Play Anim]"
             };
             if ui.button(play_txt).clicked() {
                 self.anim_playing = !self.anim_playing;
             }
-            ui.checkbox(&mut self.anim_loop, "🔁 Loop");
+            ui.checkbox(&mut self.anim_loop, "Loop");
             ui.add(egui::Slider::new(&mut self.anim_fps, 1..=20).text("FPS"));
-
-            if ui
-                .button("➕ Avanzar +12 Frames y Capturar Pose")
-                .clicked()
-            {
-                for _ in 0..12 {
-                    project.nes_live.step_frame();
-                    project.sync_live_chr_ram_signatures();
-                    project.nes_live.bus.apu.audio_samples.clear();
-                }
-                let n = project.scenes.len() + 1;
-                project.capture_current_live_scene(format!("Pose #{} en Vivo", n));
-                project.auto_sync_workspace();
-                self.texture_dirty = true;
-            }
         });
 
         ui.separator();
 
-        // Tira horizontal de fotogramas
         egui::ScrollArea::horizontal()
             .id_salt("bottom_timeline_frames_scroll")
             .show(ui, |ui| {
@@ -1280,12 +1571,9 @@ impl GraphicsEditorState {
                                 project,
                                 &frame.entity,
                                 frame.scene_idx,
-                                46.0,
+                                42.0,
                             );
-                            if ui
-                                .selectable_label(is_curr, &frame.label)
-                                .clicked()
-                            {
+                            if ui.selectable_label(is_curr, &frame.label).clicked() {
                                 self.anim_current_frame = f_idx;
                                 project.active_scene_idx = frame.scene_idx;
                                 self.texture_dirty = true;
@@ -1326,7 +1614,10 @@ impl GraphicsEditorState {
                 if a == 0 {
                     continue;
                 }
-                let p_min = Pos2::new(offset_x + (px as f32) * scale, offset_y + (py as f32) * scale);
+                let p_min = Pos2::new(
+                    offset_x + (px as f32) * scale,
+                    offset_y + (py as f32) * scale,
+                );
                 let p_rect = Rect::from_min_size(p_min, Vec2::splat(scale.max(1.0)));
                 ui.painter()
                     .rect_filled(p_rect, 0.0, Color32::from_rgb(r, g, b));
@@ -1334,12 +1625,11 @@ impl GraphicsEditorState {
         }
     }
 
-    /// Compone la imagen RGB `256x240` de la escena combinando el framebuffer base con
-    /// las ediciones en vivo de los personajes (`MetaspriteEntity`) y los reemplazos HD de `extended_assets`.
     fn compose_scene_preview_rgb(
         &self,
         project: &NgsProject,
         entities: &[MetaspriteEntity],
+        active_entity: Option<&MetaspriteEntity>,
         active_sc_idx: usize,
     ) -> Vec<u8> {
         let Some(sc) = project.scenes.get(active_sc_idx) else {
@@ -1352,8 +1642,14 @@ impl GraphicsEditorState {
             vec![20u8; 256 * 240 * 3]
         };
 
-        // Superponer cada entidad con sus tiles editados (y reemplazo HD si está activo)
-        for ent in entities {
+        let mut all_to_draw: Vec<&MetaspriteEntity> = entities.iter().collect();
+        if let Some(act) = active_entity {
+            if act.signature_key.starts_with("SCR_REG_") {
+                all_to_draw.push(act);
+            }
+        }
+
+        for ent in all_to_draw {
             let first_tile = ent.pieces.first().map(|p| p.vram_tile_id).unwrap_or(0);
             let target_id = GraphicId::new(GraphicSource::OamSprite, active_sc_idx, first_tile);
 
@@ -1392,7 +1688,6 @@ impl GraphicsEditorState {
                 }
             }
 
-            // Si alguno de los tiles de esta entidad tiene un parche activo, redibujarla sobre el framebuffer
             let has_patched_tile = ent.pieces.iter().any(|p| {
                 let id1 = GraphicId::new(GraphicSource::OamSprite, active_sc_idx, p.vram_tile_id);
                 let id2 =

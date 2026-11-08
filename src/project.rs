@@ -914,6 +914,101 @@ impl NgsProject {
         self.rebuild_global_tile_catalog();
     }
 
+    /// Simula automáticamente el avance del juego en segundo plano (sin que el usuario tenga que jugar)
+    /// combinando movimientos (Derecha, Salto, Disparo/Ataque, Exploración 4 direcciones y Start)
+    /// para descubrir y capturar nuevas pantallas, enemigos, proyectiles y poses en la galería de escenas (Fase G7).
+    pub fn auto_discover_more_scenes_without_playing(&mut self) -> usize {
+        use nes_emu_rust::controller::JoypadButtons;
+
+        // Partir del save_state de la última escena capturada si existe
+        if let Some(last_sc) = self.scenes.last() {
+            if !last_sc.save_state.is_empty() {
+                let _ = self.nes_live.from_save_state_bytes(&last_sc.save_state);
+            }
+        }
+
+        let bot_sequences: [(JoypadButtons, usize, &str); 4] = [
+            (
+                JoypadButtons::RIGHT | JoypadButtons::BUTTON_B,
+                42,
+                "Auto-Bot: Avance y Disparo",
+            ),
+            (
+                JoypadButtons::RIGHT | JoypadButtons::BUTTON_A | JoypadButtons::BUTTON_B,
+                42,
+                "Auto-Bot: Salto y Acción",
+            ),
+            (
+                JoypadButtons::UP | JoypadButtons::RIGHT | JoypadButtons::BUTTON_A,
+                42,
+                "Auto-Bot: Exploración Superior",
+            ),
+            (
+                JoypadButtons::DOWN | JoypadButtons::RIGHT | JoypadButtons::BUTTON_B,
+                42,
+                "Auto-Bot: Exploración Inferior",
+            ),
+        ];
+
+        let mut added = 0usize;
+        for (buttons, frames, label_suffix) in bot_sequences {
+            for f in 0..frames {
+                // Alternar pulso de botones A/B cada 8 frames para disparar/saltar repetidamente
+                let active_btns = if (f % 8) < 5 {
+                    buttons
+                } else {
+                    buttons & !(JoypadButtons::BUTTON_A | JoypadButtons::BUTTON_B)
+                };
+                self.nes_live.set_controller1(active_btns);
+                self.nes_live.step_frame();
+                self.sync_live_chr_ram_signatures();
+                self.nes_live.bus.apu.audio_samples.clear();
+            }
+            self.nes_live.set_controller1(JoypadButtons::empty());
+
+            if self.is_live_frame_visually_distinct() || added == 0 {
+                let next_num = self.scenes.len() + 1;
+                self.capture_current_live_scene(format!("Escena #{}: {}", next_num, label_suffix));
+                added += 1;
+            }
+        }
+
+        self.auto_sync_workspace();
+        added
+    }
+
+    fn is_live_frame_visually_distinct(&self) -> bool {
+        let live_fb = &self.nes_live.bus.ppu.framebuffer;
+        let live_oam = &self.nes_live.bus.ppu.oam;
+        let Some(last_sc) = self.scenes.last() else {
+            return true;
+        };
+        if last_sc.screen_rgb.len() != live_fb.len() {
+            return true;
+        }
+        // Si cambió algún tile ID en OAM, hay nuevos sprites o poses
+        let mut oam_tile_diffs = 0usize;
+        for idx in 0..64 {
+            if last_sc.oam[idx * 4 + 1] != live_oam[idx * 4 + 1] {
+                oam_tile_diffs += 1;
+            }
+        }
+        if oam_tile_diffs >= 2 {
+            return true;
+        }
+
+        // O si al menos el 5% de los píxeles muestreados de la pantalla cambiaron
+        let mut diff_samples = 0usize;
+        let mut total_samples = 0usize;
+        for i in (0..live_fb.len()).step_by(48) {
+            total_samples += 1;
+            if live_fb[i] != last_sc.screen_rgb[i] {
+                diff_samples += 1;
+            }
+        }
+        diff_samples * 20 >= total_samples.max(1)
+    }
+
     #[allow(dead_code)]
     pub fn save_project_manifest(&self, path: &Path) -> Result<(), String> {
         let target_dir = if path.is_dir() {
@@ -1372,6 +1467,78 @@ mod tests {
             reloaded.extended_assets[0].target_graphic_id,
             Some(target_id)
         );
+
+        let _ = fs::remove_dir_all(&temp_root);
+    }
+
+    #[test]
+    fn test_universal_screen_region_and_all_sprites_selection() {
+        use crate::graphics::metasprite::{
+            extract_all_loaded_vram_sprite_cards, reconstruct_all_oam_sprites_as_one,
+            reconstruct_individual_oam_sprites, resolve_screen_region_to_entity,
+        };
+
+        let mut oam = [0xFFu8; 256];
+        // 3 sprites separados en diferentes esquinas de la pantalla
+        oam[0..4].copy_from_slice(&[20, 0x01, 0x00, 16]);
+        oam[4..8].copy_from_slice(&[100, 0x04, 0x01, 80]);
+        oam[8..12].copy_from_slice(&[180, 0x08, 0x02, 200]);
+
+        let custom_names = HashMap::new();
+        let indiv = reconstruct_individual_oam_sprites(&oam, 0x00, &custom_names);
+        assert_eq!(indiv.len(), 3, "Deben poder seleccionarse los 3 sprites individualmente");
+
+        let all_combined =
+            reconstruct_all_oam_sprites_as_one(&oam, 0x00).expect("Debe combinar todos los sprites");
+        assert_eq!(all_combined.pieces.len(), 3);
+
+        // Probar resolución de región de pantalla y tarjetas VRAM
+        let mut chr_8kb = vec![0u8; 8192];
+        chr_8kb[257 * 16..257 * 16 + 16].copy_from_slice(&[
+            0xFF, 0x81, 0x81, 0xFF, 0xFF, 0x18, 0x18, 0xFF, 0xFF, 0x7E, 0x7E, 0xFF, 0xFF, 0xE7,
+            0xE7, 0xFF,
+        ]);
+        let vram_cards = extract_all_loaded_vram_sprite_cards(&chr_8kb, 0x00, &custom_names);
+        assert!(!vram_cards.is_empty(), "Debe extraer tarjetas visuales de los grupos no vacíos en VRAM");
+
+        let screen_rgb = vec![0x66u8; 256 * 240 * 3];
+        let palette_table = [0x0Fu8; 32];
+        let reg = resolve_screen_region_to_entity(
+            &screen_rgb,
+            &chr_8kb,
+            &palette_table,
+            0x10,
+            64,
+            96,
+            24,
+            16,
+        )
+        .expect("Debe resolver cualquier región de la pantalla");
+        assert_eq!(reg.width, 24);
+        assert_eq!(reg.height, 16);
+        assert_eq!(reg.pieces.len(), 6);
+    }
+
+    #[test]
+    fn test_auto_discover_scenes_without_playing() {
+        let temp_root = std::env::temp_dir().join("ngs_test_workspace_g7_autodiscover");
+        let _ = fs::remove_dir_all(&temp_root);
+
+        let mut project = NgsProject::default();
+        crate::workspace::create_workspace_for_new_game(
+            "Test_Auto_Scenes",
+            crate::workspace::WorkspaceTemplate::PlatformerAction,
+            &temp_root,
+            &mut project,
+        )
+        .expect("Workspace creado");
+
+        let initial_scenes = project.scenes.len();
+        assert!(initial_scenes >= 5, "La carga inicial debe generar al menos 5 escenas automáticas");
+
+        let added = project.auto_discover_more_scenes_without_playing();
+        assert!(added >= 1, "El auto-descubridor debe agregar al menos 1 nueva escena sin jugar");
+        assert!(project.scenes.len() > initial_scenes);
 
         let _ = fs::remove_dir_all(&temp_root);
     }

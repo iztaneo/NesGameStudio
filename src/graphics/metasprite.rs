@@ -106,17 +106,27 @@ impl MetaspriteEntity {
             let mut tile_bytes = [0u8; 16];
             tile_bytes.copy_from_slice(&chr_8kb[byte_off..byte_off + 16]);
             let decoded = AutoMemoryMapper::decode_tile_pixels(&tile_bytes);
-            let pal_base = 16 + ((piece.palette_idx as usize) & 3) * 4;
+            let is_bg_palette = (piece.palette_idx & 0x80) != 0;
+            let pal_num = (piece.palette_idx & 0x03) as usize;
+            let pal_base = if is_bg_palette {
+                pal_num * 4
+            } else {
+                16 + pal_num * 4
+            };
 
             for ly in 0..8usize {
                 for lx in 0..8usize {
                     let src_row = if piece.flip_v { 7 - ly } else { ly };
                     let src_col = if piece.flip_h { 7 - lx } else { lx };
                     let color_idx = decoded[src_row][src_col];
-                    if color_idx == 0 {
-                        continue; // Transparente en sprites NES
+                    if color_idx == 0 && !is_bg_palette {
+                        continue; // Transparente en sprites OAM
                     }
-                    let nes_color = palette_table[(pal_base + (color_idx as usize)) & 31];
+                    let nes_color = if color_idx == 0 {
+                        palette_table[0]
+                    } else {
+                        palette_table[(pal_base + (color_idx as usize)) & 31]
+                    };
                     let [r, g, b] = nes_color_rgb_u8(nes_color);
                     let dst_x = (piece.rel_x as usize) + lx;
                     let dst_y = (piece.rel_y as usize) + ly;
@@ -298,4 +308,428 @@ fn entries_belong_to_same_entity(a: &OamEntry, b: &OamEntry, current_cluster_siz
     let gap_y = (by0 - ay1).max(ay0 - by1);
 
     gap_x <= 2 && gap_y <= 2
+}
+
+/// Devuelve cada sprite OAM visible en pantalla como una entidad individual seleccionable (`8x8` o `8x16`),
+/// para que el usuario pueda seleccionar cualquier sprite suelto sin agrupar (Fase G7).
+pub fn reconstruct_individual_oam_sprites(
+    oam: &[u8; 256],
+    ppu_ctrl_bits: u8,
+    custom_names: &HashMap<String, String>,
+) -> Vec<MetaspriteEntity> {
+    let entries = inspect_scene_oam(oam, ppu_ctrl_bits);
+    let mut out = Vec::new();
+
+    for (i, e) in entries.into_iter().enumerate() {
+        let mut pieces = Vec::new();
+        if let Some(bottom_tile) = e.bottom_vram_tile {
+            let (first_tile, second_tile) = if e.flip_v {
+                (bottom_tile, e.top_vram_tile)
+            } else {
+                (e.top_vram_tile, bottom_tile)
+            };
+            pieces.push(MetaspritePiece {
+                oam_index: e.oam_index,
+                rel_x: 0,
+                rel_y: 0,
+                vram_tile_id: first_tile,
+                palette_idx: e.palette_idx,
+                flip_h: e.flip_h,
+                flip_v: e.flip_v,
+                behind_bg: e.behind_bg,
+            });
+            pieces.push(MetaspritePiece {
+                oam_index: e.oam_index,
+                rel_x: 0,
+                rel_y: 8,
+                vram_tile_id: second_tile,
+                palette_idx: e.palette_idx,
+                flip_h: e.flip_h,
+                flip_v: e.flip_v,
+                behind_bg: e.behind_bg,
+            });
+        } else {
+            pieces.push(MetaspritePiece {
+                oam_index: e.oam_index,
+                rel_x: 0,
+                rel_y: 0,
+                vram_tile_id: e.top_vram_tile,
+                palette_idx: e.palette_idx,
+                flip_h: e.flip_h,
+                flip_v: e.flip_v,
+                behind_bg: e.behind_bg,
+            });
+        }
+
+        let w = e.width();
+        let h = e.height();
+        let sig = format!("OAM_SPR_{:02}_T{:03X}", e.oam_index, e.top_vram_tile);
+        let default_name = format!(
+            "Sprite OAM #{:02} (Tile ${:02X}, {}x{})",
+            e.oam_index, e.tile_id, w, h
+        );
+        let name = custom_names.get(&sig).cloned().unwrap_or(default_name);
+
+        out.push(MetaspriteEntity {
+            entity_id: i + 1,
+            signature_key: sig,
+            name,
+            bbox_x: e.x,
+            bbox_y: e.y,
+            width: w,
+            height: h,
+            primary_palette: e.palette_idx,
+            is_8x16_mode: e.is_8x16,
+            pieces,
+        });
+    }
+
+    out
+}
+
+/// Ensambla TODOS los sprites OAM activos de la pantalla actual en una sola entidad compuesta editable (Fase G7).
+pub fn reconstruct_all_oam_sprites_as_one(
+    oam: &[u8; 256],
+    ppu_ctrl_bits: u8,
+) -> Option<MetaspriteEntity> {
+    let entries = inspect_scene_oam(oam, ppu_ctrl_bits);
+    if entries.is_empty() {
+        return None;
+    }
+
+    let min_x = entries.iter().map(|e| e.x).min().unwrap_or(0);
+    let min_y = entries.iter().map(|e| e.y).min().unwrap_or(0);
+    let max_x = entries
+        .iter()
+        .map(|e| (e.x as u16) + e.width())
+        .max()
+        .unwrap_or(8);
+    let max_y = entries
+        .iter()
+        .map(|e| (e.y as u16) + e.height())
+        .max()
+        .unwrap_or(8);
+
+    let width = max_x.saturating_sub(min_x as u16).max(8);
+    let height = max_y.saturating_sub(min_y as u16).max(8);
+    let primary_palette = entries[0].palette_idx;
+    let is_8x16_mode = entries[0].is_8x16;
+
+    let mut pieces = Vec::new();
+    for e in &entries {
+        let rx = (e.x as u16).saturating_sub(min_x as u16);
+        let ry = (e.y as u16).saturating_sub(min_y as u16);
+        if let Some(bottom_tile) = e.bottom_vram_tile {
+            let (first_tile, second_tile) = if e.flip_v {
+                (bottom_tile, e.top_vram_tile)
+            } else {
+                (e.top_vram_tile, bottom_tile)
+            };
+            pieces.push(MetaspritePiece {
+                oam_index: e.oam_index,
+                rel_x: rx,
+                rel_y: ry,
+                vram_tile_id: first_tile,
+                palette_idx: e.palette_idx,
+                flip_h: e.flip_h,
+                flip_v: e.flip_v,
+                behind_bg: e.behind_bg,
+            });
+            pieces.push(MetaspritePiece {
+                oam_index: e.oam_index,
+                rel_x: rx,
+                rel_y: ry + 8,
+                vram_tile_id: second_tile,
+                palette_idx: e.palette_idx,
+                flip_h: e.flip_h,
+                flip_v: e.flip_v,
+                behind_bg: e.behind_bg,
+            });
+        } else {
+            pieces.push(MetaspritePiece {
+                oam_index: e.oam_index,
+                rel_x: rx,
+                rel_y: ry,
+                vram_tile_id: e.top_vram_tile,
+                palette_idx: e.palette_idx,
+                flip_h: e.flip_h,
+                flip_v: e.flip_v,
+                behind_bg: e.behind_bg,
+            });
+        }
+    }
+
+    Some(MetaspriteEntity {
+        entity_id: 999,
+        signature_key: format!("ALL_OAM_{}x{}", width, height),
+        name: format!("Todos los Sprites en Pantalla ({} piezas)", pieces.len()),
+        bbox_x: min_x,
+        bbox_y: min_y,
+        width,
+        height,
+        primary_palette,
+        is_8x16_mode,
+        pieces,
+    })
+}
+
+/// Extrae como tarjetas visuales (`16x16`) TODOS los gráficos de sprites y bloques no vacíos
+/// que están cargados en los 8 KB de VRAM de la escena actual (`chr_8kb`), para que el usuario
+/// pueda ver, seleccionar y editar enemigos, balas, explosiones u objetos aunque no estén en `OAM` en ese frame.
+pub fn extract_all_loaded_vram_sprite_cards(
+    chr_8kb: &[u8],
+    ppu_ctrl_bits: u8,
+    custom_names: &HashMap<String, String>,
+) -> Vec<MetaspriteEntity> {
+    let is_8x16 = (ppu_ctrl_bits & 0x20) != 0;
+    let total_tiles = (chr_8kb.len() / 16).min(512);
+    let mut cards = Vec::new();
+
+    // Agrupar de 4 en 4 tiles (16x16 px) que contengan gráficos reales no vacíos
+    let mut t_idx = 0usize;
+    while t_idx + 4 <= total_tiles {
+        let mut non_empty_count = 0usize;
+        for k in 0..4 {
+            let off = (t_idx + k) * 16;
+            let mut b = [0u8; 16];
+            b.copy_from_slice(&chr_8kb[off..off + 16]);
+            if !AutoMemoryMapper::is_trivial_pattern(&b) {
+                non_empty_count += 1;
+            }
+        }
+
+        if non_empty_count > 0 {
+            let mut pieces = Vec::with_capacity(4);
+            // Si el juego usa modo 8x16 (como Contra), los pares (0,1) son la columna izquierda y (2,3) la derecha
+            let layout: [(u16, u16, u16); 4] = if is_8x16 {
+                [
+                    (0, 0, t_idx as u16),
+                    (0, 8, (t_idx + 1) as u16),
+                    (8, 0, (t_idx + 2) as u16),
+                    (8, 8, (t_idx + 3) as u16),
+                ]
+            } else {
+                [
+                    (0, 0, t_idx as u16),
+                    (8, 0, (t_idx + 1) as u16),
+                    (0, 8, (t_idx + 2) as u16),
+                    (8, 8, (t_idx + 3) as u16),
+                ]
+            };
+
+            for (rx, ry, tid) in layout {
+                pieces.push(MetaspritePiece {
+                    oam_index: 0,
+                    rel_x: rx,
+                    rel_y: ry,
+                    vram_tile_id: tid,
+                    palette_idx: if t_idx < 256 { 0 } else { 0x80 }, // 0x80 = paleta de escenario
+                    flip_h: false,
+                    flip_v: false,
+                    behind_bg: t_idx >= 256,
+                });
+            }
+
+            let sig = format!("VRAM_CARD_{:03X}", t_idx);
+            let kind_str = if t_idx < 256 { "Grupo Sprite" } else { "Grupo Escenario" };
+            let default_name = format!(
+                "{} VRAM #{} (Tiles ${:03X}..${:03X})",
+                kind_str,
+                cards.len() + 1,
+                t_idx,
+                t_idx + 3
+            );
+            let name = custom_names.get(&sig).cloned().unwrap_or(default_name);
+
+            cards.push(MetaspriteEntity {
+                entity_id: cards.len() + 100,
+                signature_key: sig,
+                name,
+                bbox_x: 0,
+                bbox_y: 0,
+                width: 16,
+                height: 16,
+                primary_palette: 0,
+                is_8x16_mode: is_8x16,
+                pieces,
+            });
+        }
+
+        t_idx += 4;
+    }
+
+    cards
+}
+
+/// Resuelve cualquier punto o rectángulo `(rx, ry, rw, rh)` seleccionado por el usuario sobre la
+/// pantalla `256x240` (ya sean montañas, árboles, suelo, torretas, HUD o sprites) hacia sus tiles
+/// `8x8` reales en `chr_8kb` y su paleta exacta, devolviendo un `MetaspriteEntity` editable en vivo (Fase G7).
+pub fn resolve_screen_region_to_entity(
+    screen_rgb: &[u8],
+    chr_8kb: &[u8],
+    palette_table: &[u8; 32],
+    ppu_ctrl_bits: u8,
+    rx: u16,
+    ry: u16,
+    rw: u16,
+    rh: u16,
+) -> Option<MetaspriteEntity> {
+    if screen_rgb.len() < 256 * 240 * 3 || chr_8kb.len() < 8192 {
+        return None;
+    }
+
+    // Alinear a rejilla de 8x8 y asegurar al menos 16x16 si fue un clic puntual
+    let aligned_x = (rx & !7).min(248);
+    let aligned_y = (ry & !7).min(232);
+    let clean_w = ((rw.max(16) + 7) & !7).min(256 - aligned_x).max(8);
+    let clean_h = ((rh.max(16) + 7) & !7).min(240 - aligned_y).max(8);
+
+    let bg_table_base: u16 = if (ppu_ctrl_bits & 0x10) != 0 { 256 } else { 0 };
+    let cols = (clean_w / 8) as usize;
+    let rows = (clean_h / 8) as usize;
+
+    // Pre-decodificar los 512 tiles de chr_8kb para comparación instantánea
+    let mut decoded_tiles = Vec::with_capacity(512);
+    for t in 0..512usize {
+        let mut b = [0u8; 16];
+        b.copy_from_slice(&chr_8kb[t * 16..t * 16 + 16]);
+        decoded_tiles.push(AutoMemoryMapper::decode_tile_pixels(&b));
+    }
+
+    let mut pieces = Vec::with_capacity(cols * rows);
+    let mut best_global_pal = 0u8;
+
+    for r in 0..rows {
+        for c in 0..cols {
+            let sx = (aligned_x as usize) + c * 8;
+            let sy = (aligned_y as usize) + r * 8;
+
+            let (matched_tile, matched_pal, is_bg) = match_8x8_screen_patch_to_vram(
+                screen_rgb,
+                &decoded_tiles,
+                palette_table,
+                bg_table_base,
+                sx,
+                sy,
+            );
+            if r == 0 && c == 0 {
+                best_global_pal = matched_pal;
+            }
+
+            pieces.push(MetaspritePiece {
+                oam_index: 0,
+                rel_x: (c * 8) as u16,
+                rel_y: (r * 8) as u16,
+                vram_tile_id: matched_tile,
+                palette_idx: if is_bg {
+                    matched_pal | 0x80
+                } else {
+                    matched_pal
+                },
+                flip_h: false,
+                flip_v: false,
+                behind_bg: is_bg,
+            });
+        }
+    }
+
+    let first_t = pieces.first().map(|p| p.vram_tile_id).unwrap_or(0);
+    Some(MetaspriteEntity {
+        entity_id: 500,
+        signature_key: format!(
+            "SCR_REG_{}_{}_{}x{}_T{:03X}",
+            aligned_x, aligned_y, clean_w, clean_h, first_t
+        ),
+        name: format!(
+            "Selección de Pantalla ({}x{} en X={}, Y={})",
+            clean_w, clean_h, aligned_x, aligned_y
+        ),
+        bbox_x: aligned_x as u8,
+        bbox_y: aligned_y as u8,
+        width: clean_w,
+        height: clean_h,
+        primary_palette: best_global_pal,
+        is_8x16_mode: false,
+        pieces,
+    })
+}
+
+fn match_8x8_screen_patch_to_vram(
+    screen_rgb: &[u8],
+    decoded_tiles: &[[[u8; 8]; 8]],
+    palette_table: &[u8; 32],
+    bg_table_base: u16,
+    sx: usize,
+    sy: usize,
+) -> (u16, u8, bool) {
+    let mut best_tile = bg_table_base;
+    let mut best_pal = 0u8;
+    let mut best_is_bg = true;
+    let mut best_error = u64::MAX;
+
+    // Primero buscar en la tabla de fondo activa (256 tiles) y luego en la otra tabla (256 tiles)
+    let search_ranges = [
+        (bg_table_base as usize, (bg_table_base as usize) + 256, true),
+        (
+            256 - (bg_table_base as usize),
+            512 - (bg_table_base as usize),
+            false,
+        ),
+    ];
+
+    for &(start_t, end_t, is_bg_table) in &search_ranges {
+        for pal_idx in 0..4u8 {
+            let pal_base = if is_bg_table {
+                (pal_idx as usize) * 4
+            } else {
+                16 + (pal_idx as usize) * 4
+            };
+            let pal_rgb: [[u8; 3]; 4] = [
+                nes_color_rgb_u8(palette_table[0]),
+                nes_color_rgb_u8(palette_table[(pal_base + 1) & 31]),
+                nes_color_rgb_u8(palette_table[(pal_base + 2) & 31]),
+                nes_color_rgb_u8(palette_table[(pal_base + 3) & 31]),
+            ];
+
+            for t_idx in start_t..end_t.min(decoded_tiles.len()) {
+                let tile_px = &decoded_tiles[t_idx];
+                let mut err = 0u64;
+                for py in 0..8usize {
+                    let y = (sy + py).min(239);
+                    for px in 0..8usize {
+                        let x = (sx + px).min(255);
+                        let scr_off = (y * 256 + x) * 3;
+                        let sr = screen_rgb[scr_off] as i32;
+                        let sg = screen_rgb[scr_off + 1] as i32;
+                        let sb = screen_rgb[scr_off + 2] as i32;
+
+                        let c_idx = (tile_px[py][px] & 3) as usize;
+                        let [tr, tg, tb] = pal_rgb[c_idx];
+                        let dr = sr - (tr as i32);
+                        let dg = sg - (tg as i32);
+                        let db = sb - (tb as i32);
+                        err += (dr * dr + dg * dg + db * db) as u64;
+                        if err >= best_error {
+                            break;
+                        }
+                    }
+                    if err >= best_error {
+                        break;
+                    }
+                }
+
+                if err < best_error {
+                    best_error = err;
+                    best_tile = t_idx as u16;
+                    best_pal = pal_idx;
+                    best_is_bg = is_bg_table;
+                    if best_error == 0 {
+                        return (best_tile, best_pal, best_is_bg);
+                    }
+                }
+            }
+        }
+    }
+
+    (best_tile, best_pal, best_is_bg)
 }

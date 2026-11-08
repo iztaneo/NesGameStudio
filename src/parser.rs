@@ -229,11 +229,43 @@ fn populate_real_scenes_and_audio_from_ines(
     }
 
     project.capture_current_live_scene(
-        "En Juego — Sprites y Fondo Activos".to_string(),
+        "En Juego — Inicio de Nivel".to_string(),
     );
 
-    // Seleccionar por defecto el estado en juego
-    project.active_scene_idx = project.scenes.len().saturating_sub(1);
+    // 4. Simular automáticamente avance y acción (Derecha + Disparo) para capturar nuevos sprites/enemigos sin jugar
+    for f in 0..45 {
+        let btns = if (f % 8) < 5 {
+            JoypadButtons::RIGHT | JoypadButtons::BUTTON_B
+        } else {
+            JoypadButtons::RIGHT
+        };
+        project.nes_live.set_controller1(btns);
+        project.nes_live.step_frame();
+        project.nes_live.bus.apu.audio_samples.clear();
+    }
+    project.nes_live.set_controller1(JoypadButtons::empty());
+    project.capture_current_live_scene(
+        "En Juego — Avance y Disparo (Auto)".to_string(),
+    );
+
+    // 5. Simular salto y movimiento adicional para capturar más poses y elementos del escenario
+    for f in 0..45 {
+        let btns = if (f % 10) < 6 {
+            JoypadButtons::RIGHT | JoypadButtons::BUTTON_A | JoypadButtons::BUTTON_B
+        } else {
+            JoypadButtons::RIGHT | JoypadButtons::UP
+        };
+        project.nes_live.set_controller1(btns);
+        project.nes_live.step_frame();
+        project.nes_live.bus.apu.audio_samples.clear();
+    }
+    project.nes_live.set_controller1(JoypadButtons::empty());
+    project.capture_current_live_scene(
+        "En Juego — Salto y Exploración (Auto)".to_string(),
+    );
+
+    // Seleccionar por defecto la escena 3 (En Juego — Inicio de Nivel)
+    project.active_scene_idx = 2.min(project.scenes.len().saturating_sub(1));
 
     // Detectar o autodescubrir de forma universal el motor sonoro del juego y sus pistas reales
     crate::runtime::jukebox_apu::detect_or_discover_audio_engine(project);
