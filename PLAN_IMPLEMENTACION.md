@@ -206,37 +206,48 @@ flowchart TD
 
 1. **Lenguaje Propio de Comportamiento (`NGScript` / `.ngscript`) Transpilado Automáticamente a C (Sin tocar `main.c`)**:
    - Para que no tengas que lidiar con punteros de C (`*`), cabeceras ni errores de sintaxis, **crearemos nuestro propio lenguaje declarativo de comportamiento (`NGScript`)** que puede editarse como texto ultra-simple o mediante bloques visuales en el estudio.
-   - **¿Cómo funciona por dentro?** `NesGameStudio` incluye un **Transpilador (`NGScript -> C99`)**: tú escribes en `.ngscript`, y al guardar, el estudio traduce tu lógica a un archivo `.h` en C optimizado (`scripts/jefe_alien.h`) y actualiza automáticamente la tabla maestra `scripts/ngs_scripts_registry.h`. **El bucle del juego en `main.c` jamás se toca a mano**.
-   - **Ejemplo de lo que escribes en `NGScript` (`jefe_alien.ngscript`)**:
+   - **¿Cómo funciona por dentro?** `NesGameStudio` incluye un **Transpilador (`NGScript -> C99`)**: tú escribes en `.ngscript`, y al guardar, el estudio traduce tu lógica a un archivo `.h` en C optimizado (`scripts/<script_id>.h`) y actualiza automáticamente la tabla maestra `scripts/ngs_scripts_registry.h`. **El bucle del juego en `main.c` jamás se toca a mano**.
+   - > [!IMPORTANT]
+     > **Decisión normativa (§9.2): `NGScript` es SOLO INGLÉS.** El ejemplo didáctico original en español (`entidad`, `estado`, `cada 90 frames:`, `si`, `mover_x`, `disparar`, `al_colisionar_con`…) **fue retirado**: no es sintaxis válida y el parser debe rechazarlo. Su versión histórica sigue en el commit `e63523e` y la gramática normativa está en [`docs/historico/PLAN_NGS_4_0_WORLDGRAPH_NGSCRIPT_EN.md`](docs/historico/PLAN_NGS_4_0_WORLDGRAPH_NGSCRIPT_EN.md) §4.
+   - **Ejemplo de lo que escribes en `NGScript` (`Guard.ngscript`) — sintaxis objetivo NGScript 1.0 (EN), todavía NO implementada (ver §9.5, fase W6)**:
      ```text
-     entidad JefeAlien (vida = 100, capa = ENEMIGO) {
-         estado PATRULLA {
-             mover_x(velocidad = 1.5, rebotar_en_pared = true)
-             cada 90 frames:
-                 disparar("BalaPlasma", hacia = JUGADOR, velocidad = 4.0)
-             si vida < 50:
-                 iniciar_escena("cutscene_jefe_furia")
-                 cambiar_estado(FURIA)
+     entity Guard {
+         var health: int = 100;
+
+         state Patrol {
+             on_update {
+                 move_x(speed = 1.5);
+                 every(90) {
+                     shoot("Arrow", target = PLAYER, speed = 4.0);
+                 }
+                 if (health < 50) {
+                     change_state(Alert);
+                 }
+             }
          }
 
-         estado FURIA {
-             transparencia(160)
-             luz_dinamica(radio = 80, color = ROJO)
-             perseguir(JUGADOR, velocidad = 2.8)
+         state Alert {
+             on_update {
+                 chase(PLAYER, speed = 2.0);
+             }
          }
 
-         al_colisionar_con(BALA_JUGADOR, proyectil):
-             restar_vida(proyectil.dano)
-             efecto_particulas("chispas", x, y)
-             destruir(proyectil)
-             si vida <= 0:
-                 efecto_explosion_hd(x, y)
-                 desbloquear_logro("CAZADOR_DE_ALIENS")
-                 destruir(este)
+         on_collision(other) {
+             if (other.tag == "PlayerProjectile") {
+                 health = health - 10;
+             }
+         }
+     }
+
+     transition DungeonGate {
+         on_request {
+             return has_item("CopperKey");
+         }
      }
      ```
-   - **Lo que `NesGameStudio` genera e incluye solo en `scripts/jefe_alien.h`**:
-     - Genera las funciones `jefe_alien_on_update(NgsEntity* self)` y `jefe_alien_on_collision(NgsEntity* self, NgsEntity* other)` y las registra automáticamente en el arreglo de punteros a función `g_entity_vtable[]` dentro de `scripts/ngs_scripts_registry.h`.
+   - *Los bloques `efecto_particulas` / `shader_2d` / `estela_fantasma` más abajo son **capacidades posteriores**: su sintaxis en español queda descartada; la versión inglesa se definirá cuando exista runtime real (hasta entonces se reportan como `unsupported`, nunca como no-op).*
+   - **Lo que `NesGameStudio` genera e incluye solo en `scripts/Guard.h`** *(contrato de diseño; el nombre real del archivo lo fija el `ScriptId`, §9.5 W6)*:
+     - Genera las funciones `guard_on_update(NgsEntity* self)` y `guard_on_collision(NgsEntity* self, NgsEntity* other)` y las registra automáticamente en el arreglo de punteros a función `g_entity_vtable[]` dentro de `scripts/ngs_scripts_registry.h`.
 
 2. **Sistema de Detección de Colisiones Automático (`engine/ngs_collision.h`) — Sin tocar el Bucle Principal**:
    - El bucle principal (`ngs_engine_step_frame()`) llama siempre a `ngs_physics_and_collisions()`, el cual resuelve **3 niveles de colisión de forma automática en cada frame (60 FPS)**:
@@ -839,3 +850,106 @@ flowchart LR
 | **Commit 4** | **`Fase G7`**: Selección Universal en Pantalla (Agrupado, Individual, todos los sprites y cualquier región/elemento del fondo), Galería Visual de todos los sprites cargados en la escena y Auto-Descubridor de Escenas sin jugar. | `src/project.rs`, `src/parser.rs`, `src/graphics/metasprite.rs`, `src/editors/graphics.rs` | `test_universal_screen_region_and_all_sprites_selection` + `test_auto_discover_scenes_without_playing` |
 
 
+
+
+---
+
+## 9. NesGameStudio 4.0 — WorldGraph + Level Studio + NGScript (EN) — Conciliación con el plan maestro
+
+> [!NOTE]
+> **Procedencia**: el plan *NesGameStudio 4.0* fue recibido el **2026-11-08** y se conserva **íntegro y sin editar** en [`docs/historico/PLAN_NGS_4_0_WORLDGRAPH_NGSCRIPT_EN.md`](docs/historico/PLAN_NGS_4_0_WORLDGRAPH_NGSCRIPT_EN.md) (histórico). Esta sección §9 es la **conciliación operativa**: contrasta ese plan con el código real y con las §1–§8 de este documento, resuelve conflictos y fija la nueva prioridad.
+> **Esta conciliación es solo documentación.** Ninguna fase W0–W10 está implementada, compilada ni probada. W0 sigue pendiente (aún no existen `docs/worldgraph-architecture.md` ni `docs/ngscript-language.md`).
+
+### 9.1. Regla de precedencia
+
+1. Donde el plan 4.0 contradice §1–§8, **prevalece el 4.0** (NGScript solo inglés, WorldGraph central, juego nuevo primero, honestidad de exportación, protocolo antialucinación por PR).
+2. Se **conservan** sin cambios: Rockola (`A1–A6`), Inspector Gráfico (`G0–G7`), Workspaces, plantillas y el exportador de ROM modificada. El 4.0 los trata como **no reescribibles** (módulos nuevos + adaptadores).
+3. Las Fases 1–10 originales (§6) **no se eliminan**: se reubican y repriorizan en §9.6.
+4. `NesEmuRust` queda **fuera de alcance** (caja negra vía la dependencia `path` de `Cargo.toml`). Todo ítem del plan original que exija modificarlo queda **bloqueado/diferido**, no inventado.
+
+### 9.2. Decisiones normativas incorporadas (del 4.0)
+
+| # | Decisión | Efecto en este plan |
+| :---: | :--- | :--- |
+| N1 | **`WorldGraph` es el modelo central**: jerarquía (contención, sin ciclos) separada de rutas de navegación (ciclos legales). Pantalla 256×240 ≠ nodo. | Nuevo modelo nativo; `CapturedScene` pasa a ser **solo evidencia**. |
+| N2 | **`NGScript` = SOLO INGLÉS** (keywords, eventos, stdlib, argumentos nombrados). Sin alias/traductor/modo bilingüe; el parser rechaza `entidad`, `estado`, `si`, `cada`, `mover_x`, `disparar`… | Ejemplo español de §3 Módulo 5 **reemplazado** por EN. Texto de UI/diálogos de juego puede seguir en español (localización, no sintaxis). |
+| N3 | **Un solo pipeline**: `.ngscript` → lexer → parser → AST/IR tipado → semántica → C99/C11 + `ngs_scripts_registry.h` → runtime. El editor de bloques produce el mismo AST. | Sin runtime paralelo ni lógica duplicada en WorldGraph. |
+| N4 | **Prioridad: juego nuevo completo primero**; ROM existente después (evidencia/inferencia/overlay). | Reordena el roadmap (§9.5). |
+| N5 | **Honestidad de gates**: no se declara éxito con solo UI/JSON/C generado; W7 exige compilar **y ejecutar** un juego híbrido. Pruebas no ejecutables se reportan `NOT RUN`. | Aplica a todo estado de este documento. |
+| N6 | **Evidencia ≠ certeza**: `Authored / Observed / Inferred / Unknown` (+ `UserConfirmed`). Nada se pinta como confirmado por parecido de píxeles. | Afecta G7 (galería de capturas) y W8. |
+| N7 | **Sin datos por título**: prohibidos `game_title.contains`, hashes ROM curados, offsets PRG a mano, perfiles por juego. | Regla de revisión de cada PR. |
+| N8 | **Protocolo antialucinación por PR** (BASE/HEAD, WORKTREE, SÍMBOLOS, LÍMITES, PRUEBA ROJA, ARCHIVOS EN ALCANCE → DIFF, PRUEBAS, EVIDENCIA, COMPATIBILIDAD, LIMITACIONES, GATE). | Plantilla obligatoria de cada fase W. |
+
+### 9.3. Contraste con el código real (verificado en `HEAD = e63523e`, worktree limpio, 2026-11-08)
+
+El baseline que cita el 4.0 **coincide** con el HEAD real (`master == origin/master`). Se localizaron por símbolo (no por línea) los símbolos principales: `main.rs::ActiveTab`, `project.rs::{CapturedScene, capture_current_live_scene, auto_discover_more_scenes_without_playing, is_live_frame_visually_distinct, apply_tile_patch_by_id}`, `parser.rs::populate_real_scenes_and_audio_from_ines`, `workspace.rs::{WorkspaceTemplate, WorkspacePaths, create_workspace_for_new_game, create_workspace_from_existing_game, save_workspace, load_workspace}`, `codegen.rs::{generate_modified_c_file, compile_and_run_modified_c}`, `editors/graphics.rs::{render_top_scene_gallery_strip, render_center_interactive_scene, render_entity_paint_canvas_tab}`, `graphics/metasprite.rs::{extract_all_loaded_vram_sprite_cards, resolve_screen_region_to_entity}`. Se re-verificarán en W0 los restantes (`NesGameStudioApp::update`, `GraphicsEditorState::ui`).
+
+| ID | Tema | Lo que asume el 4.0 | Realidad verificada | Resolución |
+| :---: | :--- | :--- | :--- | :--- |
+| **C1** | **Edición PRG por firma** | Regla 0.1.7 y T62: **no editar PRG solo por coincidencia de firmas**. | **Conflicto real con G1/§8.2.3**: `apply_tile_patch_by_id` sincroniza offsets `PRG` por coincidencia de 16 bytes (`auto_prg_offsets`). | Se **conserva** la interceptación en vivo por firma (no destructiva, preserva `original_bytes`; es lo que evita que el usuario se preocupe por memoria). La **escritura automática a PRG** pasa a ser **condicionada**: solo con correspondencia verificada y única; ante >1 candidato se marca *ambigua* y no se aplica. Implementación en **W9**; hasta entonces es **limitación conocida**. |
+| **C2** | **Serialización** | `Cargo.toml` sin crates de serialización; usar `serde`/`serde_json` "si se justifican". | Correcto: dependencias = `nes_emu_rust` (path), `eframe`, `egui`, `cpal`, `bitflags`, `rfd`, `log`, `env_logger`. Persistencia = **JSON escrito a mano** (`workspace.rs::save_workspace/load_workspace/escape_json`). | **Decisión abierta D1** (§9.7). |
+| **C3** | **Texto del plan original inexacto** | — | §8.2.4 *G5* dice que la crate `image` "ya está presente" y G1/G6 muestran `#[derive(Serialize, Deserialize)]`. **Falso en el código**: PNG/BMP/zlib se decodifican **a mano** (`graphics/replacement.rs::{decode_png_bytes, decode_bmp_bytes, inflate_zlib_stream}`). | Las firmas Rust de G1/G6 se leen como **contratos conceptuales**, no como código con `serde`. Sin cambios de código. |
+| **C4** | **"Juego nuevo" de G0** | `create_workspace_for_new_game` "genera ROM base sintética … no fingir gameplay". | Confirmado: `synthesize_template_nes_rom(template)` → se carga con `parser::load_nes_rom_into_project` y corre en el **núcleo 6502**; **no** usa el runtime nativo C (`ngs_engine_step_frame`) descrito en §3 Módulo 5. `main_behavior.ngscript` contiene **solo comentarios** y se escribe con `let _ = fs::write(...)` (error ignorado). | **Reclasificación honesta**: G0-nuevo = ✅ *scaffolding de Workspace*; ⚠️ "motor base a 60 FPS" = *placeholder* NES, **no** cumple el gate de juego nuevo (W7). Las plantillas pasan a ser *presets* de `GameplayProfile`. Escritura segura/diagnóstico → **W2**. Script placeholder etiquetado → **W2/T67**. |
+| **C5** | **Capturas ≠ niveles** | `CapturedScene` es evidencia; no ordenar "nivel 1/2" por captura. | G7 llama a su bot "Auto-Descubridor de Escenas **y Niveles**" y el importador nombra capturas con etiquetas tipo *Demo / Nivel 1* (a confirmar por símbolo en W8). | Reetiquetar a **"Capturas / Evidencia"** con título neutral y procedencia (**W8**). G7 y sus tests (`test_auto_discover_scenes_without_playing`) se mantienen; el nº de capturas **nunca** equivale al nº de niveles. |
+| **C6** | **Tarjetas y regiones G7 como fuente de mapa** | `extract_all_loaded_vram_sprite_cards` y `resolve_screen_region_to_entity` solo sugieren. | Correcto: agrupan 4 tiles consecutivos / comparan por RGB. | Se mantienen como **sugerencias gráficas**; prohibido usarlas como `MetatileDefinition` o `MapCell` confirmados (**W4**). |
+| **C7** | **Tamaño de archivos** | Módulos nuevos y adaptadores acotados. | `project.rs` = 1 545 líneas, `workspace.rs` = 1 087 (contra la meta de ~200 líneas/archivo de §7.3). | Todo lo nuevo en **módulos pequeños** (`src/world/`, `src/levels/`, `src/ngscript/`…). En `project.rs` solo se añade el campo que referencia el `WorldDocument`. |
+| **C8** | **Base de pruebas** | Los `Txx` son criterios por implementar. | Hay **12** `#[test]` (8 en `project.rs`, 4 en `runtime/jukebox_apu.rs`). El estado verde de los 4 de audio no se re-ejecutó en esta conciliación. | W0 registra la línea base ejecutando `cargo test`; los `T01–T70` se implementan junto a cada módulo nuevo. |
+| **C9** | **NesEmuRust fuera de alcance** | Prohibido abrir/editar/proponer cambios. | `Cargo.toml` depende por `path = "../NesEmuRust"`; §4.4 (*`retro/ngs_nes_adapter.c`*) y Fase 2 asumen integración. | Esas piezas quedan **bloqueadas/diferidas**. W8 usa solo lo que NesGameStudio ya invoca (RGB/OAM/savestate); si falta nametable/scroll → precisión reducida documentada. |
+| **C10** | **Solapamiento con Fases 4 y 5** | W4–W7 | Fase 4 (colisiones + transpilador) y Fase 5 (editor de niveles) **ya describen** parte de W4–W7. | Se **absorben** (ver §9.6); no se duplica trabajo. |
+| **C11** | **Ejemplos NGScript en español** | Actualizar a EN en W0/W6. | §3 Módulo 5 contenía el ejemplo `JefeAlien` en español. | ✅ **Ya reemplazado** en este documento (solo texto; sin parser). Los bloques `efecto_particulas` / `shader_2d` quedan como *capacidad posterior `unsupported`*. |
+
+### 9.4. Archivos que NO se reescriben (lista de protección para W0)
+
+`src/runtime/jukebox_apu.rs`, `src/editors/audio.rs` (Rockola) · `src/editors/graphics.rs` (solo se admite un enlace contextual) · `src/graphics/*` · `src/codegen.rs` (no se injerta código de juego nuevo; pipeline aparte) · `src/workspace.rs` y `src/project.rs` (cambios mínimos y aditivos, con migración sin pérdida). El plan **no** dispara ningún cambio en `NesEmuRust`.
+
+### 9.5. Hoja de ruta priorizada W0–W10 (orden de ejecución)
+
+Estado de todas: ⏳ **Pendiente** (nada implementado). Cada fase = PR(s) pequeños, en orden, con protocolo N8. **No se avanza a la siguiente sin el gate de la actual.**
+
+| Orden | Fase | Prioridad | Entrega | Gate (IDs de prueba) | Absorbe del plan original |
+| :---: | :--- | :---: | :--- | :--- | :--- |
+| 0 | **W0** Baseline, contrato de idioma y arquitectura | 🔴 | `docs/worldgraph-architecture.md`, `docs/ngscript-language.md`, línea base de tests/HEAD | Doc coherente + repo intacto | Decisiones de §9.2 |
+| 1 | **W1** `WorldGraph`/`LevelMap` y validadores puros | 🔴 | `src/world/*`, `src/levels/*` (modelo, IDs estables, comandos, validación) | T01–T10 | — |
+| 2 | **W2** Persistencia versionada y migración | 🔴 | `world/`, `levels/`, `scripts/` por ID; escritura segura; carga de workspaces antiguos | T11–T16 | Corrige C4 (escritura ignorada) |
+| 3 | **W3** World Studio (grafo editable) | 🟠 | Pestaña nueva con jerarquía + canvas | T17–T20 | — |
+| 4 | **W4** Level Studio (mapas reales) | 🟠 | Canvas > 256×240, capas, *Edit Asset* vs *Paint Instance* | T21–T26 | Fase 5 (lienzo de mapas/colisiones) |
+| 5 | **W5** Objetos, componentes, portales y `GameplayProfile` | 🟠 | Vocabulario de componentes; bindings pendientes marcados *NOT EXECUTABLE YET* | T27–T30 | Fase 4 (colisiones) |
+| 6 | **W6** NGScript 1.0 **EN**: parser, semántica, C, registry, editor | 🔴 | `src/ngscript/*`, `docs/ngscript-stdlib.md` | T31–T44 | Fase 4 (transpilador) |
+| 7 | **W7** Runtime de juego nuevo + E2E ejecutado | 🔴 | `export_native_new_game` (PC C99/C11) con juego híbrido ejecutado | T45–T51 | Fase 4 + parte de Fase 3 (cámaras) |
+| 8 | **W8** Importación ROM como evidencia | 🟠 | `src/rom_world/*`; grafo parcial `Observed/Inferred/Unknown` | T52–T58 | Reencuadra G7 (C5) |
+| 9 | **W9** Edición retro no destructiva + export condicionado | 🟠 | Overlay; 3 rutas de exportación; capacidades visibles | T59–T64 | Resuelve C1 |
+| 10 | **W10** Calidad, documentación y ejemplos | 🟠 | Regresión G7/Rockola, benchmarks, `HybridAdventure`, `RoomQuest` | T65–T70 | — |
+
+**Condición de cierre "juego nuevo" (W0–W7)** y **"ROM importada" (W8–W9)**: los criterios finales del 4.0 §13 aplican textualmente (ver histórico).
+
+### 9.6. Reubicación de las Fases 1–10 originales (§6)
+
+| Fase original | Estado / nueva prioridad | Relación con el 4.0 |
+| :---: | :--- | :--- |
+| **1** Base IDE, galería, Rockola | ✅ Hecha (A1–A6, G0–G7) | Intocable; cubierta por regresión T65/T66. |
+| **2** Abstracción GPU / Classic 2D (`HD-01`) | 🔵 Diferida tras W10 | W7 apunta a PC nativo C99/C11 con render inicial; no depende de GPU. |
+| **3** Enhanced 2D, widescreen, scrolling (`HD-02`) | 🔵 Diferida (excepto cámaras mínimas en W7) | `SideScroll/TopDown/StaticRoom/AutoScroll` entran como sistemas de `GameplayProfile`; iluminación/normal maps después. |
+| **4** Colisiones + transpilador NGScript | 🔴 **Absorbida por W5–W7** | NGScript **solo inglés**; efectos (`shader_2d`, partículas) = `unsupported` hasta tener runtime. |
+| **5** Editor de niveles, diálogos RPG, cinemáticas, Sfxr | 🟠 Mapas → **W4**; 🟡 diálogos/cinemáticas/Sfxr diferidos tras W7 | Banderas (`FlagId`) de W1 sirven de base para *Quest Flags*. |
+| **6** Copiloto IA + buscador de RAM | 🟠 Tras W6 | El Copiloto genera **únicamente NGScript EN validado**; el escáner de RAM es independiente. |
+| **7–8** Híbrido 2D/3D y Scene Composer | 🔵 Posterior a W10 | Sin cambios de diseño. |
+| **9** Postproceso, rewind, netplay, logros | 🔵 Posterior | Sin cambios. |
+| **10** Multiplataforma y empaquetado | 🔵 Posterior | Sin cambios; la exportación a ROM NES nueva (6502) sigue **separada y condicionada**. |
+
+### 9.7. Decisiones abiertas (requieren confirmación antes de W2/W7)
+
+| ID | Decisión | Recomendación | Cuándo se necesita |
+| :---: | :--- | :--- | :---: |
+| **D1** | Persistencia de `world/`/`levels/`: agregar `serde` + `serde_json` (requiere red para `Cargo.lock`) **o** extender el JSON manual actual. | `serde`/`serde_json` en **solo NesGameStudio**; el cargador manual de proyectos antiguos se conserva intacto. | Inicio de **W2** (W1 no necesita serialización). |
+| **D2** | Compilador C para W7: identificar cuál usa ya `compile_and_run_modified_c`; si no hay ninguno, W7 se reporta **`NOT RUN`**. | Inspeccionarlo en W0, sin asumirlo. | **W0** / W7 |
+| **D3** | Flujo Git: rama por PR (`feature/ngs-4-0-wN`) vs. `master` directa. El 4.0 pide rama separada. | Rama por fase y *merge* al pasar el gate. | Antes de **W0** |
+| **D4** | Alcance de la primera entrega de código. | **Solo W0 + W1** (como indica el 4.0 §12). | Antes de **W0** |
+
+### 9.8. Registro de trazabilidad 4.0
+
+| Fecha | Evento | Estado |
+| :--- | :--- | :---: |
+| 2026-11-08 | Plan 4.0 recibido y archivado íntegro en `docs/historico/` | ✅ Archivado |
+| 2026-11-08 | Contraste contra HEAD `e63523e` (símbolos, `Cargo.toml`, tests, `workspace.rs`) y conciliación en §9 | ✅ Documentado |
+| 2026-11-08 | Ejemplo NGScript español de §3 Módulo 5 sustituido por inglés | ✅ Solo texto |
+| — | W0 … W10 | ⏳ Pendiente (ninguna implementada) |
