@@ -137,155 +137,147 @@ pub fn detect_or_discover_audio_engine(project: &mut NgsProject) {
 
     if title_lower.contains("batman") {
         project.sound_trigger = SoundTrigger::RamAddress(0x0042);
-        project.discovered_tracks = vec![
-            DiscoveredTrack { id: 0x03, title: "Pista 03 — Pantalla de Título e Introducción".into(), is_music: true },
-            DiscoveredTrack { id: 0x05, title: "Pista 05 — Fase 1: Catedral Gótica".into(), is_music: true },
-            DiscoveredTrack { id: 0x06, title: "Pista 06 — Fase 2: Fábrica Química".into(), is_music: true },
-            DiscoveredTrack { id: 0x09, title: "Pista 09 — Fase 3: Tren Subterráneo".into(), is_music: true },
-            DiscoveredTrack { id: 0x0B, title: "Pista 0B — Fase 4: Cavernas de Nieve".into(), is_music: true },
-            DiscoveredTrack { id: 0x0D, title: "Pista 0D — Fase 5: Fortaleza del Joker".into(), is_music: true },
-            DiscoveredTrack { id: 0x3A, title: "Pista 3A — Batalla contra Jefe".into(), is_music: true },
-            DiscoveredTrack { id: 0x42, title: "Pista 42 — Fanfarria de Fase Completada".into(), is_music: true },
-            DiscoveredTrack { id: 0x45, title: "Pista 45 — Final y Créditos".into(), is_music: true },
-            DiscoveredTrack { id: 0x01, title: "SFX 01 — Disparo Batarang".into(), is_music: false },
-            DiscoveredTrack { id: 0x02, title: "SFX 02 — Explosión Pequeña".into(), is_music: false },
-            DiscoveredTrack { id: 0x04, title: "SFX 04 — Impacto / Golpe".into(), is_music: false },
-            DiscoveredTrack { id: 0x07, title: "SFX 07 — Salto / Deslizamiento".into(), is_music: false },
-            DiscoveredTrack { id: 0x08, title: "SFX 08 — Recoger Cápsula de Arma".into(), is_music: false },
-            DiscoveredTrack { id: 0x0A, title: "SFX 0A — Daño a Batman".into(), is_music: false },
-            DiscoveredTrack { id: 0x20, title: "SFX 20 — Explosión de Enemigo".into(), is_music: false },
-            DiscoveredTrack { id: 0x22, title: "SFX 22 — Disparo Pesado".into(), is_music: false },
-            DiscoveredTrack { id: 0x24, title: "SFX 24 — Láser / Escudo".into(), is_music: false },
-            DiscoveredTrack { id: 0x25, title: "SFX 25 — Explosión de Jefe".into(), is_music: false },
-        ];
+        let bgm_ids = [0x01u8, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F];
+        for (idx, &id) in bgm_ids.iter().enumerate() {
+            project.discovered_tracks.push(DiscoveredTrack {
+                id,
+                title: format!("Melodía {:02} — Tema Musical (ID ${:02X})", idx + 1, id),
+                is_music: true,
+            });
+        }
+        let sfx_ids = [0x20u8, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x29, 0x2A, 0x2B];
+        for (idx, &id) in sfx_ids.iter().enumerate() {
+            project.discovered_tracks.push(DiscoveredTrack {
+                id,
+                title: format!("SFX {:02} — Efecto de Sonido (ID ${:02X})", idx + 1, id),
+                is_music: false,
+            });
+        }
         return;
     }
 
     if title_lower.contains("ninja") {
         project.sound_trigger = SoundTrigger::RamAddress(0x0700);
-        project.discovered_tracks = vec![
-            DiscoveredTrack { id: 0x05, title: "Pista 05 — Introducción Cinemática".into(), is_music: true },
-            DiscoveredTrack { id: 0x06, title: "Pista 06 — Caos en la Oscuridad (Prólogo)".into(), is_music: true },
-            DiscoveredTrack { id: 0x09, title: "Pista 09 — Acto 1: Ciudad en Sombras".into(), is_music: true },
-            DiscoveredTrack { id: 0x0A, title: "Pista 0A — Acto 2: La Torre de la Muerte".into(), is_music: true },
-            DiscoveredTrack { id: 0x0B, title: "Pista 0B — Acto 3: Montañas Rocosas".into(), is_music: true },
-            DiscoveredTrack { id: 0x0C, title: "Pista 0C — Acto 4: El Laberinto de Hielo".into(), is_music: true },
-            DiscoveredTrack { id: 0x19, title: "Pista 19 — Acto 5: La Guarida Oscura".into(), is_music: true },
-            DiscoveredTrack { id: 0x1E, title: "Pista 1E — Acto 6: El Templo del Mal".into(), is_music: true },
-            DiscoveredTrack { id: 0x23, title: "Pista 23 — Batalla de Jefe".into(), is_music: true },
-            DiscoveredTrack { id: 0x25, title: "Pista 25 — Batalla Final contra Ashtar".into(), is_music: true },
-            DiscoveredTrack { id: 0x04, title: "SFX 04 — Corte de Espada del Dragón".into(), is_music: false },
-            DiscoveredTrack { id: 0x07, title: "SFX 07 — Salto Ninja".into(), is_music: false },
-            DiscoveredTrack { id: 0x08, title: "SFX 08 — Arte Ninja / Fuego".into(), is_music: false },
-            DiscoveredTrack { id: 0x1F, title: "SFX 1F — Shuriken / Estrella".into(), is_music: false },
-            DiscoveredTrack { id: 0x20, title: "SFX 20 — Golpe a Enemigo".into(), is_music: false },
-            DiscoveredTrack { id: 0x21, title: "SFX 21 — Recoger Ítem Espiritual".into(), is_music: false },
-            DiscoveredTrack { id: 0x22, title: "SFX 22 — Daño Recibido".into(), is_music: false },
-            DiscoveredTrack { id: 0x24, title: "SFX 24 — Explosión".into(), is_music: false },
-        ];
+        let bgm_ids = [0x04u8, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x1E, 0x2A, 0x33];
+        for (idx, &id) in bgm_ids.iter().enumerate() {
+            project.discovered_tracks.push(DiscoveredTrack {
+                id,
+                title: format!("Melodía {:02} — Tema Musical (ID ${:02X})", idx + 1, id),
+                is_music: true,
+            });
+        }
+        let sfx_ids = [0x0Eu8, 0x0F, 0x10, 0x19, 0x1A, 0x1F, 0x20, 0x21, 0x22, 0x23, 0x24, 0x25];
+        for (idx, &id) in sfx_ids.iter().enumerate() {
+            project.discovered_tracks.push(DiscoveredTrack {
+                id,
+                title: format!("SFX {:02} — Efecto de Sonido (ID ${:02X})", idx + 1, id),
+                is_music: false,
+            });
+        }
         return;
     }
 
     if title_lower.contains("chip") || title_lower.contains("dale") {
-        project.sound_trigger = SoundTrigger::Subroutine(0xCE31);
-        project.discovered_tracks = vec![
-            DiscoveredTrack { id: 0x02, title: "Pista 02 — Pantalla de Título".into(), is_music: true },
-            DiscoveredTrack { id: 0x03, title: "Pista 03 — Restaurante (Fase 1)".into(), is_music: true },
-            DiscoveredTrack { id: 0x04, title: "Pista 04 — Alcantarillas (Fase 2)".into(), is_music: true },
-            DiscoveredTrack { id: 0x05, title: "Pista 05 — Barco y Puerto (Fase 3)".into(), is_music: true },
-            DiscoveredTrack { id: 0x06, title: "Pista 06 — Casa del Terror (Fase 4)".into(), is_music: true },
-            DiscoveredTrack { id: 0x07, title: "Pista 07 — Fábrica de Relojes (Fase 5)".into(), is_music: true },
-            DiscoveredTrack { id: 0x09, title: "Pista 09 — Mina del Oeste (Fase 6)".into(), is_music: true },
-            DiscoveredTrack { id: 0x0A, title: "Pista 0A — Parque de Atracciones (Fase 7)".into(), is_music: true },
-            DiscoveredTrack { id: 0x0D, title: "Pista 0D — Batalla contra Jefe".into(), is_music: true },
-            DiscoveredTrack { id: 0x0E, title: "Pista 0E — Fanfarria de Victoria / Final".into(), is_music: true },
-            DiscoveredTrack { id: 0x01, title: "SFX 01 — Salto".into(), is_music: false },
-            DiscoveredTrack { id: 0x08, title: "SFX 08 — Recoger Caja / Manzana".into(), is_music: false },
-            DiscoveredTrack { id: 0x0B, title: "SFX 0B — Lanzar Caja".into(), is_music: false },
-            DiscoveredTrack { id: 0x0C, title: "SFX 0C — Golpe a Enemigo".into(), is_music: false },
-            DiscoveredTrack { id: 0x22, title: "SFX 22 — Daño".into(), is_music: false },
-            DiscoveredTrack { id: 0x25, title: "SFX 25 — Explosión".into(), is_music: false },
-            DiscoveredTrack { id: 0x28, title: "SFX 28 — Estrella / Bonus".into(), is_music: false },
-        ];
+        project.sound_trigger = SoundTrigger::RamAddress(0x00F0);
+        let bgm_ids = [0x72u8, 0x73, 0x74, 0x75, 0x76, 0x77, 0x78];
+        for (idx, &id) in bgm_ids.iter().enumerate() {
+            project.discovered_tracks.push(DiscoveredTrack {
+                id,
+                title: format!("Melodía {:02} — Tema Musical (ID ${:02X})", idx + 1, id),
+                is_music: true,
+            });
+        }
+        let sfx_ids = [0x22u8, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x29, 0x2A, 0x2B, 0x2C, 0x2D];
+        for (idx, &id) in sfx_ids.iter().enumerate() {
+            project.discovered_tracks.push(DiscoveredTrack {
+                id,
+                title: format!("SFX {:02} — Efecto de Sonido (ID ${:02X})", idx + 1, id),
+                is_music: false,
+            });
+        }
         return;
     }
 
     if title_lower.contains("tiny toon") {
-        project.sound_trigger = SoundTrigger::Subroutine(0xF81F);
-        project.discovered_tracks = vec![
-            DiscoveredTrack { id: 0x28, title: "Pista 28 — Tema Principal de Tiny Toons / Título".into(), is_music: true },
-            DiscoveredTrack { id: 0x49, title: "Pista 49 — Las Colinas de Acme Acres (Fase 1)".into(), is_music: true },
-            DiscoveredTrack { id: 0x29, title: "Pista 29 — El Bosque Encantado (Fase 2)".into(), is_music: true },
-            DiscoveredTrack { id: 0x2A, title: "Pista 2A — Ciudad de Acme (Fase 3)".into(), is_music: true },
-            DiscoveredTrack { id: 0x2B, title: "Pista 2B — Mansión de Montana Max".into(), is_music: true },
-            DiscoveredTrack { id: 0x2C, title: "Pista 2C — Batalla de Jefe".into(), is_music: true },
-            DiscoveredTrack { id: 0x02, title: "SFX 02 — Salto de Buster Bunny".into(), is_music: false },
-            DiscoveredTrack { id: 0x03, title: "SFX 03 — Recoger Zanahoria".into(), is_music: false },
-            DiscoveredTrack { id: 0x04, title: "SFX 04 — Pisotón a Enemigo".into(), is_music: false },
-            DiscoveredTrack { id: 0x05, title: "SFX 05 — Giro de Taz".into(), is_music: false },
-            DiscoveredTrack { id: 0x08, title: "SFX 08 — Daño / Caída".into(), is_music: false },
-            DiscoveredTrack { id: 0x12, title: "SFX 12 — Puerta / Cambio de Personaje".into(), is_music: false },
-        ];
+        project.sound_trigger = SoundTrigger::Subroutine(0xF823);
+        let bgm_ids = [0x28u8, 0x5E, 0x62, 0x6A, 0x6C];
+        for (idx, &id) in bgm_ids.iter().enumerate() {
+            project.discovered_tracks.push(DiscoveredTrack {
+                id,
+                title: format!("Melodía {:02} — Tema Musical (ID ${:02X})", idx + 1, id),
+                is_music: true,
+            });
+        }
+        let sfx_ids = [0x02u8, 0x03, 0x04, 0x05, 0x06, 0x08, 0x09, 0x0A, 0x0B, 0x0C];
+        for (idx, &id) in sfx_ids.iter().enumerate() {
+            project.discovered_tracks.push(DiscoveredTrack {
+                id,
+                title: format!("SFX {:02} — Efecto de Sonido (ID ${:02X})", idx + 1, id),
+                is_music: false,
+            });
+        }
         return;
     }
 
     if title_lower.contains("zelda") {
-        project.sound_trigger = SoundTrigger::RamAddress(0x0604);
+        project.sound_trigger = SoundTrigger::RamAddress(0x0600);
         project.discovered_tracks = vec![
-            DiscoveredTrack { id: 0x01, title: "Pista 01 — Tema Principal de Hyrule (Overworld)".into(), is_music: true },
-            DiscoveredTrack { id: 0x02, title: "Pista 02 — Mazmorra / Inframundo (Dungeon)".into(), is_music: true },
-            DiscoveredTrack { id: 0x04, title: "Pista 04 — Pantalla de Título e Historia".into(), is_music: true },
-            DiscoveredTrack { id: 0x08, title: "Pista 08 — Fanfarria de Trifuerza Obtenida".into(), is_music: true },
-            DiscoveredTrack { id: 0x10, title: "Pista 10 — Mazmorra Final (Death Mountain)".into(), is_music: true },
-            DiscoveredTrack { id: 0x20, title: "Pista 20 — Flauta Mágica".into(), is_music: true },
-            DiscoveredTrack { id: 0x40, title: "Pista 40 — Batalla contra Ganon".into(), is_music: true },
-            DiscoveredTrack { id: 0x80, title: "Pista 80 — Créditos y Rescate de Zelda".into(), is_music: true },
-            DiscoveredTrack { id: 0x11, title: "SFX 11 — Espada / Ataque".into(), is_music: false },
-            DiscoveredTrack { id: 0x12, title: "SFX 12 — Bomba / Explosión".into(), is_music: false },
-            DiscoveredTrack { id: 0x14, title: "SFX 14 — Secreto Descubierto".into(), is_music: false },
-            DiscoveredTrack { id: 0x18, title: "SFX 18 — Daño / Golpe".into(), is_music: false },
+            DiscoveredTrack { id: 0x01, title: "Melodía 01 — Tema de Superficie / Hyrule (ID $01)".into(), is_music: true },
+            DiscoveredTrack { id: 0x02, title: "Melodía 02 — Mazmorra / Inframundo (ID $02)".into(), is_music: true },
+            DiscoveredTrack { id: 0x04, title: "Melodía 03 — Mazmorra Final / Death Mountain (ID $04)".into(), is_music: true },
+            DiscoveredTrack { id: 0x10, title: "Melodía 04 — Introducción / Pantalla de Título (ID $10)".into(), is_music: true },
+            DiscoveredTrack { id: 0x20, title: "Melodía 05 — Game Over / Continuar (ID $20)".into(), is_music: true },
+            DiscoveredTrack { id: 0x40, title: "Melodía 06 — Fanfarria de Trifuerza (ID $40)".into(), is_music: true },
+            DiscoveredTrack { id: 0x80, title: "Melodía 07 — Rescate de Zelda y Créditos (ID $80)".into(), is_music: true },
+            DiscoveredTrack { id: 0x11, title: "SFX 01 — Espada / Ataque ($0604=$01)".into(), is_music: false },
+            DiscoveredTrack { id: 0x12, title: "SFX 02 — Bumerán / Flecha ($0604=$02)".into(), is_music: false },
+            DiscoveredTrack { id: 0x14, title: "SFX 03 — Flauta / Magia ($0604=$04)".into(), is_music: false },
+            DiscoveredTrack { id: 0x21, title: "SFX 04 — Secreto Descubierto ($0602=$01)".into(), is_music: false },
+            DiscoveredTrack { id: 0x22, title: "SFX 05 — Explosión de Bomba ($0602=$02)".into(), is_music: false },
+            DiscoveredTrack { id: 0x24, title: "SFX 06 — Golpe / Daño a Enemigo ($0602=$04)".into(), is_music: false },
+            DiscoveredTrack { id: 0x28, title: "SFX 07 — Recoger Corazón / Rupia ($0602=$08)".into(), is_music: false },
         ];
         return;
     }
 
     if title_lower.contains("simpson") {
-        project.sound_trigger = SoundTrigger::Subroutine(0xFADA);
-        project.discovered_tracks = vec![
-            DiscoveredTrack { id: 0x29, title: "Pista 29 — Pantalla de Título (The Simpsons Theme)".into(), is_music: true },
-            DiscoveredTrack { id: 0x2E, title: "Pista 2E — Mapa del Mundo y Ruleta".into(), is_music: true },
-            DiscoveredTrack { id: 0x33, title: "Pista 33 — China: El Barco Pirata".into(), is_music: true },
-            DiscoveredTrack { id: 0x42, title: "Pista 42 — Polo Norte / Cavernas de Hielo".into(), is_music: true },
-            DiscoveredTrack { id: 0x43, title: "Pista 43 — Egipto / Las Pirámides".into(), is_music: true },
-            DiscoveredTrack { id: 0x47, title: "Pista 47 — Hollywood / Los Estudios".into(), is_music: true },
-            DiscoveredTrack { id: 0x4B, title: "Pista 4B — Batalla de Jefe".into(), is_music: true },
-            DiscoveredTrack { id: 0x54, title: "Pista 54 — Fanfarria de Nivel / Final".into(), is_music: true },
-            DiscoveredTrack { id: 0x01, title: "SFX 01 — Salto de Bart".into(), is_music: false },
-            DiscoveredTrack { id: 0x02, title: "SFX 02 — Lanzar Petardo / Esfera".into(), is_music: false },
-            DiscoveredTrack { id: 0x03, title: "SFX 03 — Recoger Bolsa de Diamantes".into(), is_music: false },
-            DiscoveredTrack { id: 0x04, title: "SFX 04 — Daño (¡Ay Caramba!)".into(), is_music: false },
-            DiscoveredTrack { id: 0x07, title: "SFX 07 — Patineta / Rebote".into(), is_music: false },
-            DiscoveredTrack { id: 0x0C, title: "SFX 0C — Impacto a Enemigo".into(), is_music: false },
-        ];
+        project.sound_trigger = SoundTrigger::Subroutine(0xFAC7);
+        for id in 0x01..=0x0Du8 {
+            project.discovered_tracks.push(DiscoveredTrack {
+                id,
+                title: format!("Melodía {:02} — Tema Musical (ID ${:02X})", id, id),
+                is_music: true,
+            });
+        }
+        for sfx_num in 0x01..=0x0Cu8 {
+            let id = 0x80 | sfx_num;
+            project.discovered_tracks.push(DiscoveredTrack {
+                id,
+                title: format!("SFX {:02} — Efecto de Sonido (ID ${:02X})", sfx_num, sfx_num),
+                is_music: false,
+            });
+        }
         return;
     }
 
     if title_lower.contains("kirby") {
-        project.sound_trigger = SoundTrigger::Subroutine(0xF826);
-        project.discovered_tracks = vec![
-            DiscoveredTrack { id: 0x07, title: "Pista 07 — Pantalla de Título e Introducción".into(), is_music: true },
-            DiscoveredTrack { id: 0x21, title: "Pista 21 — Vegetal Valley (Fase 1)".into(), is_music: true },
-            DiscoveredTrack { id: 0x29, title: "Pista 29 — Ice Cream Island (Fase 2)".into(), is_music: true },
-            DiscoveredTrack { id: 0x2F, title: "Pista 2F — Butter Building (Fase 3)".into(), is_music: true },
-            DiscoveredTrack { id: 0x23, title: "Pista 23 — Grape Garden (Fase 4)".into(), is_music: true },
-            DiscoveredTrack { id: 0x28, title: "Pista 28 — Yogurt Yard (Fase 5)".into(), is_music: true },
-            DiscoveredTrack { id: 0x27, title: "Pista 27 — Batalla contra Rey Dedede".into(), is_music: true },
-            DiscoveredTrack { id: 0x01, title: "SFX 01 — Salto / Flotar".into(), is_music: false },
-            DiscoveredTrack { id: 0x02, title: "SFX 02 — Inhalar Enemigo".into(), is_music: false },
-            DiscoveredTrack { id: 0x03, title: "SFX 03 — Disparo de Estrella".into(), is_music: false },
-            DiscoveredTrack { id: 0x04, title: "SFX 04 — Tragar / Copiar Habilidad".into(), is_music: false },
-            DiscoveredTrack { id: 0x05, title: "SFX 05 — Daño a Kirby".into(), is_music: false },
-            DiscoveredTrack { id: 0x06, title: "SFX 06 — Puerta de Fase".into(), is_music: false },
-        ];
+        project.sound_trigger = SoundTrigger::Subroutine(0xF862);
+        let bgm_ids = [0x01u8, 0x02, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10, 0x11, 0x12, 0x14, 0x1C, 0x20, 0x21, 0x23];
+        for (idx, &id) in bgm_ids.iter().enumerate() {
+            project.discovered_tracks.push(DiscoveredTrack {
+                id,
+                title: format!("Melodía {:02} — Tema Musical (ID ${:02X})", idx + 1, id),
+                is_music: true,
+            });
+        }
+        for sfx_num in 0x01..=0x0Cu8 {
+            let id = 0x80 | sfx_num;
+            project.discovered_tracks.push(DiscoveredTrack {
+                id,
+                title: format!("SFX {:02} — Efecto de Sonido (ID ${:02X})", sfx_num, sfx_num),
+                is_music: false,
+            });
+        }
         return;
     }
 
@@ -520,7 +512,7 @@ fn classify_tracks_via_apu_energy(project: &mut NgsProject, extra_imms: &[u8]) {
         }
         seen_signatures.push(full_sig);
 
-        // Evaluar cuántos canales melódicos (Pulse1, Pulse2, Triangle) cambiaron y siguen activos en la fase tardía
+        // Evaluar cuántos canales melódicos (Pulse1, Pulse2, Triangle) cambiaron y siguen activos en la fase media
         let mut p1_changed_active = 0usize;
         let mut p2_changed_active = 0usize;
         let mut tri_changed_active = 0usize;
@@ -539,15 +531,37 @@ fn classify_tracks_via_apu_energy(project: &mut NgsProject, extra_imms: &[u8]) {
             + (p2_changed_active >= 6) as usize
             + (tri_changed_active >= 6) as usize;
 
-        // Una Melodía (BGM) mantiene energía en la fase tardía Y activa al menos 2 canales melódicos nuevos
-        let is_music = energy_late > 280.0 && melodic_channels_changed >= 2 && late_sigs != base_late_sigs;
+        // Si parece candidato a canción a los 45 frames, verificar hasta los 2.1 segundos (frame 125)
+        // que siga sonando con cambios de notas reales (para no confundir efectos largos de 1s con melodías).
+        let mut is_music = false;
+        if energy_late > 320.0 && melodic_channels_changed >= 1 && late_sigs != base_late_sigs {
+            for _ in 45..95 {
+                project.nes_live.step_frame();
+                project.nes_live.bus.apu.audio_samples.clear();
+            }
+            let mut sustained_samples = Vec::with_capacity(2048);
+            let mut distinct_notes = std::collections::HashSet::new();
+            for _ in 95..125 {
+                project.nes_live.step_frame();
+                project.nes_live.take_audio_samples(&mut sustained_samples);
+                let sig = apu_frame_sig(&project.nes_live);
+                if sig.0 > 8 { distinct_notes.insert((1u8, sig.0)); }
+                if sig.1 > 8 { distinct_notes.insert((2u8, sig.1)); }
+                if sig.2 > 8 { distinct_notes.insert((3u8, sig.2)); }
+            }
+            let sustained_energy: f32 = sustained_samples.iter().map(|s| s.abs()).sum();
+            if sustained_energy > 600.0 && distinct_notes.len() >= 3 {
+                is_music = true;
+            }
+        }
 
+        let count_so_far = project.discovered_tracks.iter().filter(|t| t.is_music == is_music).count() + 1;
         project.discovered_tracks.push(DiscoveredTrack {
             id,
             title: if is_music {
-                format!("Pista {:02X} — Melodía / Tema Musical #{:02X}", id, id)
+                format!("Melodía {:02} — Tema Musical (ID ${:02X})", count_so_far, id)
             } else {
-                format!("SFX {:02X} — Efecto de Sonido #{:02X}", id, id)
+                format!("SFX {:02} — Efecto de Sonido (ID ${:02X})", count_so_far, id)
             },
             is_music,
         });
@@ -763,7 +777,15 @@ impl JukeboxEngine {
 
         match project.sound_trigger {
             SoundTrigger::Subroutine(sub_addr) => {
-                call_subroutine_with_a(&mut project.nes_live, sub_addr, sound_id);
+                if sub_addr == 0xFAC7 && sound_id >= 0x80 {
+                    // En The Simpsons, $FAC7 dispara melodías BGM y $FADA dispara efectos SFX
+                    call_subroutine_with_a(&mut project.nes_live, 0xFADA, sound_id & 0x7F);
+                } else if sub_addr == 0xF862 && sound_id >= 0x80 {
+                    // En Kirby's Adventure, $F862 dispara melodías BGM y $F826 dispara efectos SFX
+                    call_subroutine_with_a(&mut project.nes_live, 0xF826, sound_id & 0x7F);
+                } else {
+                    call_subroutine_with_a(&mut project.nes_live, sub_addr, sound_id);
+                }
             }
             SoundTrigger::RamAddress(ram_addr) => {
                 let target = (ram_addr as usize) & 0x7FF;
@@ -771,8 +793,15 @@ impl JukeboxEngine {
                     let bit = 1u8 << (sound_id & 0x07);
                     project.nes_live.bus.cpu_ram[0x04F2] = bit;
                     project.nes_live.bus.cpu_ram[0x04F4] = bit;
-                } else if ram_addr == 0x0604 && [0x11, 0x12, 0x14, 0x18].contains(&sound_id) {
+                } else if ram_addr == 0x0600 && [0x11, 0x12, 0x14].contains(&sound_id) {
+                    // En The Legend of Zelda, $0600 es BGM y $0604/$0602 son colas de SFX
+                    project.nes_live.bus.cpu_ram[0x0604] = sound_id & 0x0F;
+                } else if ram_addr == 0x0600 && [0x21, 0x22, 0x24, 0x28].contains(&sound_id) {
                     project.nes_live.bus.cpu_ram[0x0602] = sound_id & 0x0F;
+                } else if ram_addr == 0x00F0 {
+                    // En Chip 'n Dale 2, limpiar el cerrojo $00B6 antes de escribir en $00F0
+                    project.nes_live.bus.cpu_ram[0x00B6] = 0;
+                    project.nes_live.bus.cpu_ram[0x00F0] = sound_id;
                 } else {
                     project.nes_live.bus.cpu_ram[target] = sound_id;
                 }
@@ -988,42 +1017,29 @@ mod tests {
     }
 
     #[test]
-    fn test_inspect_all_rooms_audio_discovery() {
-        let dir = std::fs::read_dir(r"c:\Users\Cesar\Documents\AI Proyectos\NesEmuRust\rooms").unwrap();
-        for entry in dir.flatten() {
-            let path = entry.path();
-            if path.extension().and_then(|s| s.to_str()) != Some("nes") {
-                continue;
-            }
-            let ines_bytes = std::fs::read(&path).unwrap();
-            let mut project = NgsProject::default();
-            project.game_title = path.file_stem().unwrap().to_string_lossy().to_string();
-            let prg_banks = ines_bytes[4] as usize;
-            let prg_size = prg_banks * 16384;
-            if 16 + prg_size <= ines_bytes.len() {
-                project.prg_rom = ines_bytes[16..16 + prg_size].to_vec();
-            }
-            if project.nes_live.load_rom_bytes(project.game_title.clone(), &ines_bytes).is_err() {
-                continue;
-            }
-            for _ in 0..80 {
-                project.nes_live.step_frame();
-                project.nes_live.bus.apu.audio_samples.clear();
-            }
-            project.base_audio_save_state = Some(project.nes_live.to_save_state_bytes());
-            detect_or_discover_audio_engine(&mut project);
-            let bgm_ids: Vec<u8> = project.discovered_tracks.iter().filter(|t| t.is_music).map(|t| t.id).collect();
-            let sfx_ids: Vec<u8> = project.discovered_tracks.iter().filter(|t| !t.is_music).map(|t| t.id).collect();
-            println!(
-                "ROM: {:<45} | Trigger: {:<18?} | BGM ({:>2}): {:02X?} | SFX ({:>2}): {:02X?}",
-                project.game_title,
-                project.sound_trigger,
-                bgm_ids.len(),
-                &bgm_ids[..bgm_ids.len().min(10)],
-                sfx_ids.len(),
-                &sfx_ids[..sfx_ids.len().min(10)],
-            );
+    fn test_zelda_and_3stage_bgm_detector() {
+        let ines = std::fs::read(r"c:\Users\Cesar\Documents\AI Proyectos\NesEmuRust\rooms\Chip 'n Dale - Rescue Rangers 2 (USA).nes").unwrap();
+        let mut nes = Nes::default();
+        nes.load_rom_bytes("T", &ines).unwrap();
+        nes.bus.apu.set_sample_rate(44100);
+        for _ in 0..80 { nes.step_frame(); nes.bus.apu.audio_samples.clear(); }
+        let base = nes.to_save_state_bytes();
+        let mut bgm = Vec::new();
+        let mut sfx = Vec::new();
+        for id in 0x22..=0x78u8 {
+            nes.from_save_state_bytes(&base).unwrap();
+            nes.bus.cpu_ram[0x00F0] = id;
+            let mut early = Vec::new();
+            for _ in 0..25 { nes.step_frame(); nes.take_audio_samples(&mut early); }
+            let e1: f32 = early.iter().map(|s| s.abs()).sum();
+            if e1 < 40.0 { continue; }
+            for _ in 25..110 { nes.step_frame(); nes.bus.apu.audio_samples.clear(); }
+            let mut late = Vec::new();
+            for _ in 0..35 { nes.step_frame(); nes.take_audio_samples(&mut late); }
+            let e2: f32 = late.iter().map(|s| s.abs()).sum();
+            if e2 > 800.0 { bgm.push(id); } else { sfx.push(id); }
         }
+        println!("ChipDale ($00F0) -> BGM ({}): {:02X?} | SFX ({}): {:02X?}", bgm.len(), bgm, sfx.len(), &sfx[..sfx.len().min(15)]);
     }
 }
 
