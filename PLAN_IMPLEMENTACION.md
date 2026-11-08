@@ -936,14 +936,14 @@ Estado de todas: ⏳ **Pendiente** (nada implementado). Cada fase = PR(s) peque�
 | **9** Postproceso, rewind, netplay, logros | 🔵 Posterior | Sin cambios. |
 | **10** Multiplataforma y empaquetado | 🔵 Posterior | Sin cambios; la exportación a ROM NES nueva (6502) sigue **separada y condicionada**. |
 
-### 9.7. Decisiones abiertas (requieren confirmación antes de W2/W7)
+### 9.7. Decisiones (D1 y D3 resueltas el 2026-11-08; D2 y D4 abiertas)
 
 | ID | Decisión | Recomendación | Cuándo se necesita |
 | :---: | :--- | :--- | :---: |
-| **D1** | Persistencia de `world/`/`levels/`: agregar `serde` + `serde_json` (requiere red para `Cargo.lock`) **o** extender el JSON manual actual. | `serde`/`serde_json` en **solo NesGameStudio**; el cargador manual de proyectos antiguos se conserva intacto. | Inicio de **W2** (W1 no necesita serialización). |
+| **D1** ✅ **RESUELTA: `serde` + `serde_json`** | Persistencia de `world/`/`levels/`: agregar `serde` + `serde_json` (requiere red para `Cargo.lock`) **o** extender el JSON manual actual. | `serde`/`serde_json` en **solo NesGameStudio**; el cargador manual de proyectos antiguos se conserva intacto. | Inicio de **W2** (W1 no necesita serialización). |
 | **D2** | Compilador C para W7: identificar cuál usa ya `compile_and_run_modified_c`; si no hay ninguno, W7 se reporta **`NOT RUN`**. | Inspeccionarlo en W0, sin asumirlo. | **W0** / W7 |
-| **D3** | Flujo Git: rama por PR (`feature/ngs-4-0-wN`) vs. `master` directa. El 4.0 pide rama separada. | Rama por fase y *merge* al pasar el gate. | Antes de **W0** |
-| **D4** | Alcance de la primera entrega de código. | **Solo W0 + W1** (como indica el 4.0 §12). | Antes de **W0** |
+| **D3** ✅ **RESUELTA: commits directos en `master`** (un solo desarrollador agéntico) | Flujo Git: rama por PR (`feature/ngs-4-0-wN`) vs. `master` directa. El 4.0 pide rama separada. | Rama por fase y *merge* al pasar el gate. | Antes de **W0** |
+| **D4** ⏸ **EN ESPERA** | Alcance de la primera entrega de código. | **Solo W0 + W1** (como indica el 4.0 §12). **El usuario pidió NO arrancar implementación todavía**: primero se revisa el plan. | Antes de **W0** |
 
 ### 9.8. Registro de trazabilidad 4.0
 
@@ -952,4 +952,5 @@ Estado de todas: ⏳ **Pendiente** (nada implementado). Cada fase = PR(s) peque�
 | 2026-11-08 | Plan 4.0 recibido y archivado íntegro en `docs/historico/` | ✅ Archivado |
 | 2026-11-08 | Contraste contra HEAD `e63523e` (símbolos, `Cargo.toml`, tests, `workspace.rs`) y conciliación en §9 | ✅ Documentado |
 | 2026-11-08 | Ejemplo NGScript español de §3 Módulo 5 sustituido por inglés | ✅ Solo texto |
+| 2026-11-08 | Decisiones del usuario: D1 = serde/serde_json; D3 = commits directos en master; implementación **en pausa** hasta aprobar el plan | ✅ Registrado |
 | — | W0 … W10 | ⏳ Pendiente (ninguna implementada) |
