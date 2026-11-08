@@ -566,10 +566,10 @@ Esta sección mantiene la **trazabilidad viva** de cada módulo corregido o en e
 
 ---
 
-### 8.2. Plan en Revisión: `NGS Graphic Asset Inspector 2.2` — Explorador Gráfico Visual de 4 Paneles, Mapeo Automático de Memoria y Memoria Extendida Ilimitada (`Fases G1` a `G6`)
+### 8.2. Hito Completado: `NGS Graphic Asset Inspector 2.2` — Explorador Gráfico Visual de 4 Paneles, Workspace Automático, Mapeo Transparente de Memoria y Memoria Extendida Ilimitada (`Fases G0` a `G6`)
 
-- **Estado**: 🟡 **Listo para Ejecución (Pendiente de Aprobación del Usuario)**
-- **Commit Base**: `cb862e8` (`origin/master`)
+- **Estado**: ✅ **Completado, probado y publicado en GitHub (`origin/master`)**
+- **Commit Base**: `cb862e8` → **Commit Entregado**: `e968b3b`
 - **Archivos Principales**:
   - [`src/project.rs`](file:///c:/Users/Cesar/Documents/AI%20Proyectos/NesGameStudio/src/project.rs)
   - [`src/editors/graphics.rs`](file:///c:/Users/Cesar/Documents/AI%20Proyectos/NesGameStudio/src/editors/graphics.rs)
@@ -808,13 +808,34 @@ flowchart LR
      - `test_oam_8x8_and_8x16_metasprite_reconstruction`: Verifica la reconstrucción exacta de personajes desde `OAM` con `FlipH`/`FlipV` y tiles no contiguos.
      - `test_png_replacement_and_project_roundtrip`: Verifica decodificación `.PNG` RGBA y guardado/recarga en `.ngs.json`.
 
+##### Fase G7 — Selección Universal en Pantalla, Catálogo Visual Completo de la Escena y Auto-Descubridor de Escenas (Sin Jugar)
+- **Prioridad**: 🔴 Crítica (Usabilidad e Inspección Completa de Pantalla)
+- **Diagnóstico de Prueba Visual (*Contra*)**:
+  1. En una pantalla activa solo se podían seleccionar las entidades `OAM` agrupadas (3 en la captura inicial de *Contra*), impidiendo seleccionar otros sprites individuales, elementos del escenario dibujados en *Nametable* (montañas, selva, rocas, agua, torretas) o seleccionar todos los sprites de la pantalla a la vez.
+  2. El panel izquierdo no mostraba con miniaturas todos los demás sprites y enemigos que **ya están cargados en la `VRAM` de esa escena** (enemigos del nivel, proyectiles, explosiones, poses de salto).
+  3. El selector de escenas estaba oculto en un combo de texto con solo 3 capturas y sin un explorador automático que descubra más niveles/escenas sin obligar al usuario a jugar, además de glifos Unicode fuera de fuente que se veían como `□`.
+- **Archivos**: [`src/project.rs`](file:///c:/Users/Cesar/Documents/AI%20Proyectos/NesGameStudio/src/project.rs), [`src/parser.rs`](file:///c:/Users/Cesar/Documents/AI%20Proyectos/NesGameStudio/src/parser.rs), [`src/graphics/metasprite.rs`](file:///c:/Users/Cesar/Documents/AI%20Proyectos/NesGameStudio/src/graphics/metasprite.rs), [`src/editors/graphics.rs`](file:///c:/Users/Cesar/Documents/AI%20Proyectos/NesGameStudio/src/editors/graphics.rs)
+- **Actividades**:
+  1. **3 Modos de Selección Directa en la Pantalla Central + Botón `Seleccionar Todos los Sprites`**:
+     - **Modo `Personaje Agrupado (OAM)`**: Agrupa las piezas del personaje completo.
+     - **Modo `Cada Sprite Individual (OAM 8x8 / 8x16)`**: Permite seleccionar individualmente cada uno de los 64 sprites activos de la pantalla por separado.
+     - **Modo `Cualquier Elemento / Región de la Pantalla (Fondo + Sprites)`**: Hacer clic o **arrastrar un rectángulo con el mouse sobre cualquier zona de la pantalla `256x240`** (montañas, árboles, rocas, torretas, HUD o grupo de sprites) captura la `Nametable` (`$2000..$2FFF`) + `Attribute Table` + `OAM` de esa región `(X, Y, W, H)` y la convierte en una entidad editable en el lienzo derecho.
+     - **Botón `[Seleccionar Todos los Sprites de la Pantalla]`**: Ensambla todos los sprites activos de la pantalla actual en un solo lienzo compuesto editable.
+  2. **Catálogo Visual con Miniaturas de TODOS los Sprites y Bloques Cargados en la Escena Actual**:
+     - En el panel izquierdo, mostrar con **miniaturas renderizadas a color** todos los grupos de sprites y tiles no vacíos presentes en la `VRAM` de la escena actual (aunque aún no estén en `OAM` en ese frame), permitiendo seleccionarlos y pintarlos con 1 clic.
+  3. **Galería Visual de Escenas (Miniaturas de Pantallas) + `Auto-Descubridor de Escenas y Niveles (Sin Jugar)`**:
+     - Capturar en cada `CapturedScene` también la `nametable_vram: Vec<u8>` y scroll para poder inspeccionar y seleccionar cualquier elemento del escenario.
+     - Agregar el motor **`auto_discover_more_scenes_without_playing`** que simula en segundo plano el *Attract Mode / Demo*, un bot automático (avanzar, saltar, disparar) y sondeo de variables de nivel/escena, agregando automáticamente a la galería cada pantalla donde cambie el escenario o aparezcan nuevos sprites/enemigos.
+  4. **Guía Visual `PASO 1 -> PASO 2 -> PASO 3` y Eliminación de Iconos Rotos (`□`)**:
+     - Sustituir todos los emojis fuera del rango de la fuente de Windows/`egui` por etiquetas limpias y numeradas.
+
 ---
 
-#### 8.2.5. Plan de Ejecución Incremental (3 Commits Trazables)
+#### 8.2.5. Plan de Ejecución Incremental (4 Commits Trazables)
 
 | Commit | Alcance | Módulos Impactados | Pruebas de Validación |
 | :---: | :--- | :--- | :--- |
-| **Commit 1** | **`Fase G1 + Fase G2`**: `GraphicId`, `TilePatch` no destructivo, `AutoMemoryMapper` (`CHR-ROM` + `CHR-RAM` firma/PRG) y eliminación del ruido de `PRG_ROM`. | `src/project.rs`, `src/graphics/mod.rs`, `src/codegen.rs` | `test_graphic_id_separates_banks_and_sources`, `test_chr_ram_auto_memory_mapper_signature_and_prg_sync` |
-| **Commit 2** | **`Fase G3 + Fase G4`**: Inspector `OAM` (`8x8`/`8x16`), reconstrucción de `MetaspriteEntity`, **Interfaz Visual de 4 Paneles** con clic en escena, lienzo compuesto con `Undo/Redo` y Timeline de Animación. | `src/graphics/oam_inspector.rs`, `src/graphics/metasprite.rs`, `src/graphics/animation.rs`, `src/editors/graphics.rs` | `test_oam_8x8_and_8x16_metasprite_reconstruction` + compilación limpia sin warnings |
-| **Commit 3** | **`Fase G5 + Fase G6`**: Reemplazo real `.PNG`/`.BMP` RGBA, **Banco de Memoria Extendida Ilimitada** en vista previa y exportador `.C`, y persistencia `.ngs.json`. | `src/graphics/replacement.rs`, `src/project.rs`, `src/codegen.rs`, `src/editors/graphics.rs` | `test_png_replacement_and_project_roundtrip` + `git push origin master` |
+| **Commit 1–3 (`e968b3b`)** | **`Fases G0 a G6`**: Generador de Workspace, `GraphicId`, `AutoMemoryMapper`, reconstrucción `OAM`, UI de 4 Paneles, `.PNG`/`.BMP` RGBA y Banco Extendido. | `src/workspace.rs`, `src/graphics/*`, `src/project.rs`, `src/codegen.rs`, `src/editors/graphics.rs` | ✅ 6 pruebas unitarias en `ok` y publicado en `origin/master` |
+| **Commit 4** | **`Fase G7`**: Selección Universal en Pantalla (Agrupado, Individual, todos los sprites y cualquier región/elemento del fondo), Galería Visual de todos los sprites cargados en la escena y Auto-Descubridor de Escenas sin jugar. | `src/project.rs`, `src/parser.rs`, `src/graphics/metasprite.rs`, `src/editors/graphics.rs` | `test_universal_screen_region_and_all_sprites_selection` + `test_auto_discover_scenes_without_playing` |
+
 
