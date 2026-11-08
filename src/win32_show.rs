@@ -144,7 +144,7 @@ pub fn ensure_on_default_desktop() {
                     "[NesGameStudio] Proceso GUI iniciado en WinSta0\\Default (PID = {}).",
                     pi.dw_process_id
                 );
-                // No bloquear el proceso padre si se invoca asíncronamente
+                WaitForSingleObject(pi.h_process, 0xFFFF_FFFF);
                 std::process::exit(0);
             }
         }
