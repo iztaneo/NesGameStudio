@@ -75,6 +75,10 @@ fn wide_null(s: &str) -> Vec<u16> {
 }
 
 pub fn ensure_on_default_desktop() {
+    if std::env::args().any(|a| a == "--no-respawn") || std::env::var("NGS_RESPAWNED").is_ok() {
+        return;
+    }
+
     unsafe {
         let tid = GetCurrentThreadId();
         let cur_desk = GetThreadDesktop(tid);
@@ -91,6 +95,9 @@ pub fn ensure_on_default_desktop() {
             println!(
                 "[NesGameStudio] Relanzando en el escritorio interactivo 'WinSta0\\Default'..."
             );
+            std::env::set_var("NGS_RESPAWNED", "1");
+            let exe_path = std::env::current_exe().unwrap_or_default();
+            let mut cmd = wide_null(&format!("\"{}\" --no-respawn", exe_path.display()));
             let mut desktop = wide_null("WinSta0\\Default");
             let si = StartupInfoW {
                 cb: std::mem::size_of::<StartupInfoW>() as u32,
@@ -122,7 +129,7 @@ pub fn ensure_on_default_desktop() {
             const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
             let ok = CreateProcessW(
                 ptr::null(),
-                GetCommandLineW(),
+                cmd.as_mut_ptr(),
                 ptr::null(),
                 ptr::null(),
                 0,
@@ -137,7 +144,7 @@ pub fn ensure_on_default_desktop() {
                     "[NesGameStudio] Proceso GUI iniciado en WinSta0\\Default (PID = {}).",
                     pi.dw_process_id
                 );
-                WaitForSingleObject(pi.h_process, 0xFFFF_FFFF);
+                // No bloquear el proceso padre si se invoca asíncronamente
                 std::process::exit(0);
             }
         }

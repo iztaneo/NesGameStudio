@@ -13,11 +13,11 @@ pub fn load_c_and_asm_into_project(c_path: &Path, project: &mut NgsProject) -> R
         .unwrap_or("Juego_NES")
         .to_string();
 
+    *project = NgsProject::default();
     project.loaded = true;
     project.game_title = stem;
     project.c_file_path = Some(c_path.to_path_buf());
     project.raw_c_source = raw_c.clone();
-    project.modified_tiles.clear();
 
     project.mapper_id = parse_define_u16(&raw_c, "#define MAPPER_ID").unwrap_or(0) as u8;
     // NesEmuRust exporta: `static uint8_t NAMETABLE_MIRRORING = 1; /* 0=Horizontal, 1=Vertical */`
@@ -103,6 +103,7 @@ pub fn load_nes_rom_into_project(nes_path: &Path, project: &mut NgsProject) -> R
     let prg_size = prg_banks * 16384;
     let chr_size = chr_banks * 8192;
 
+    *project = NgsProject::default();
     project.loaded = true;
     project.game_title = stem;
     project.mapper_id = mapper_id;

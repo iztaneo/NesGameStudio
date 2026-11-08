@@ -326,21 +326,7 @@ fn auto_discover_sound_engine_dynamically(project: &mut NgsProject) {
             }
             if distinct_sigs.len() >= 2 {
                 project.sound_trigger = SoundTrigger::Subroutine(*sub);
-                let mut sorted_imms = imms.clone();
-                sorted_imms.sort();
-                for &id in &sorted_imms {
-                    let is_m = id >= 0x10 || id < 0x08;
-                    project.discovered_tracks.push(DiscoveredTrack {
-                        id,
-                        title: if is_m {
-                            format!("Pista {:02X} — Tema / Canción #{:02X}", id, id)
-                        } else {
-                            format!("SFX {:02X} — Efecto de Sonido #{:02X}", id, id)
-                        },
-                        is_music: is_m,
-                    });
-                }
-                let _ = project.nes_live.from_save_state_bytes(base_state);
+                classify_tracks_via_apu_energy(project, imms);
                 return;
             }
         }
@@ -366,21 +352,7 @@ fn auto_discover_sound_engine_dynamically(project: &mut NgsProject) {
             }
             if distinct_sigs.len() >= 2 {
                 project.sound_trigger = SoundTrigger::RamAddress(*addr);
-                let mut sorted_imms = imms.clone();
-                sorted_imms.sort();
-                for &id in &sorted_imms {
-                    let is_m = id >= 0x10 || id < 0x08;
-                    project.discovered_tracks.push(DiscoveredTrack {
-                        id,
-                        title: if is_m {
-                            format!("Pista {:02X} — Tema / Canción #{:02X}", id, id)
-                        } else {
-                            format!("SFX {:02X} — Efecto de Sonido #{:02X}", id, id)
-                        },
-                        is_music: is_m,
-                    });
-                }
-                let _ = project.nes_live.from_save_state_bytes(base_state);
+                classify_tracks_via_apu_energy(project, imms);
                 return;
             }
         }
@@ -388,28 +360,82 @@ fn auto_discover_sound_engine_dynamically(project: &mut NgsProject) {
 
     if let Some((sub, imms)) = top_jsr.first() {
         project.sound_trigger = SoundTrigger::Subroutine(*sub);
-        let mut sorted = imms.clone();
-        sorted.sort();
-        for &id in &sorted {
-            project.discovered_tracks.push(DiscoveredTrack {
-                id,
-                title: format!("Pista {:02X} — Pista #{:02X}", id, id),
-                is_music: true,
-            });
-        }
+        classify_tracks_via_apu_energy(project, imms);
     } else if let Some((addr, imms)) = top_sta.first() {
         project.sound_trigger = SoundTrigger::RamAddress(*addr);
-        let mut sorted = imms.clone();
-        sorted.sort();
-        for &id in &sorted {
-            project.discovered_tracks.push(DiscoveredTrack {
-                id,
-                title: format!("Pista {:02X} — Pista #{:02X}", id, id),
-                is_music: true,
-            });
-        }
+        classify_tracks_via_apu_energy(project, imms);
     } else {
         project.sound_trigger = SoundTrigger::Unknown;
+        fallback_discovered_tracks(project);
+    }
+}
+
+/// Clasifica dinámicamente las pistas probando IDs contra la APU real en dos fases:
+/// - Fase 1 (frames 1..25): descarta IDs silenciosos o inválidos (`energy_early <= 40.0`).
+/// - Fase 2 (frames 26..60): separa Melodías continuas (`energy_late > 300.0`) de Efectos de sonido cortos (`energy_late <= 300.0`).
+fn classify_tracks_via_apu_energy(project: &mut NgsProject, extra_imms: &[u8]) {
+    let Some(base_state) = project.base_audio_save_state.clone() else {
+        fallback_discovered_tracks(project);
+        return;
+    };
+
+    let mut candidates: Vec<u8> = (1..=0x58u8).collect();
+    for &imm in extra_imms {
+        if imm > 0 && imm != 0xFF && !candidates.contains(&imm) {
+            candidates.push(imm);
+        }
+    }
+    candidates.sort();
+
+    project.nes_live.bus.apu.set_sample_rate(44100);
+    let mut samples_early = Vec::with_capacity(2048);
+    let mut samples_late = Vec::with_capacity(3072);
+
+    for id in candidates {
+        let _ = project.nes_live.from_save_state_bytes(&base_state);
+        match project.sound_trigger {
+            SoundTrigger::Subroutine(sub) => {
+                if !call_subroutine_with_a(&mut project.nes_live, sub, id) {
+                    continue;
+                }
+            }
+            SoundTrigger::RamAddress(addr) => {
+                project.nes_live.bus.cpu_ram[(addr as usize) & 0x7FF] = id;
+            }
+            SoundTrigger::Unknown => continue,
+        }
+
+        samples_early.clear();
+        for _ in 0..25 {
+            project.nes_live.step_frame();
+            project.nes_live.take_audio_samples(&mut samples_early);
+        }
+        let energy_early: f32 = samples_early.iter().map(|s| s.abs()).sum();
+        if energy_early <= 40.0 {
+            continue;
+        }
+
+        samples_late.clear();
+        for _ in 0..35 {
+            project.nes_live.step_frame();
+            project.nes_live.take_audio_samples(&mut samples_late);
+        }
+        let energy_late: f32 = samples_late.iter().map(|s| s.abs()).sum();
+        let is_music = energy_late > 300.0;
+
+        project.discovered_tracks.push(DiscoveredTrack {
+            id,
+            title: if is_music {
+                format!("Pista {:02X} — Melodía / Tema Musical #{:02X}", id, id)
+            } else {
+                format!("SFX {:02X} — Efecto de Sonido #{:02X}", id, id)
+            },
+            is_music,
+        });
+    }
+
+    let _ = project.nes_live.from_save_state_bytes(&base_state);
+    if project.discovered_tracks.is_empty() {
         fallback_discovered_tracks(project);
     }
 }
@@ -760,143 +786,54 @@ mod tests {
     }
 
     #[test]
-    fn test_discover_sound_triggers_all_roms() {
-        use std::collections::HashMap;
-        let rom_dir = r"c:\Users\Cesar\Documents\AI Proyectos\NesEmuRust\rooms";
-        for entry in std::fs::read_dir(rom_dir).unwrap().flatten() {
-            let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) != Some("nes") {
-                continue;
-            }
-            let name = path.file_stem().unwrap().to_str().unwrap().to_string();
-            let bytes = std::fs::read(&path).unwrap();
-            let mut nes = Nes::default();
-            if nes.load_rom_bytes(&name, &bytes).is_err() {
-                println!("=== {} (Skipped: unsupported mapper) ===", name);
-                continue;
-            }
-            nes.bus.apu.set_sample_rate(44100);
-            for _ in 0..90 {
-                nes.step_frame();
-                nes.bus.apu.audio_samples.clear();
-            }
-            let base_state = nes.to_save_state_bytes();
+    fn test_classify_bgm_vs_sfx_by_duration() {
+        let rom_path = r"c:\Users\Cesar\Documents\AI Proyectos\NesEmuRust\rooms\Contra (USA).nes";
+        let bytes = std::fs::read(rom_path).unwrap();
+        let mut nes = Nes::default();
+        nes.load_rom_bytes("Contra", &bytes).unwrap();
+        nes.bus.apu.set_sample_rate(44100);
 
-            // Scan PRG-ROM for `LDA #imm; JSR $XXXX` (A9 xx 20 lo hi) and `LDA #imm; STA $zp/$abs` (A9 xx 85 zp / A9 xx 8D lo hi)
-            let prg = &nes.bus.cartridge.as_ref().unwrap().prg_rom;
-            let mut jsr_counts: HashMap<u16, Vec<u8>> = HashMap::new();
-            let mut sta_counts: HashMap<u16, Vec<u8>> = HashMap::new();
+        for _ in 0..80 {
+            nes.step_frame();
+            nes.bus.apu.audio_samples.clear();
+        }
+        let base_state = nes.to_save_state_bytes();
 
-            for i in 0..prg.len().saturating_sub(5) {
-                if prg[i] == 0xA9 {
-                    let imm = prg[i + 1];
-                    if imm == 0 || imm == 0xFF {
-                        continue;
-                    }
-                    if prg[i + 2] == 0x20 || prg[i + 2] == 0x4C {
-                        let addr = u16::from_le_bytes([prg[i + 3], prg[i + 4]]);
-                        if addr >= 0x8000 {
-                            let list = jsr_counts.entry(addr).or_default();
-                            if !list.contains(&imm) {
-                                list.push(imm);
-                            }
-                        }
-                    } else if prg[i + 2] == 0x85 {
-                        let addr = prg[i + 3] as u16;
-                        let list = sta_counts.entry(addr).or_default();
-                        if !list.contains(&imm) {
-                            list.push(imm);
-                        }
-                    } else if prg[i + 2] == 0x8D {
-                        let addr = u16::from_le_bytes([prg[i + 3], prg[i + 4]]);
-                        if addr < 0x0800 {
-                            let list = sta_counts.entry(addr).or_default();
-                            if !list.contains(&imm) {
-                                list.push(imm);
-                            }
-                        }
-                    }
-                }
-            }
+        println!("\n=== Clasificación Real BGM vs SFX en Contra ===");
+        let mut bgm_list = Vec::new();
+        let mut sfx_list = Vec::new();
 
-            let mut top_jsr: Vec<(u16, Vec<u8>)> = jsr_counts.into_iter().filter(|(_, v)| v.len() >= 5).collect();
-            top_jsr.sort_by_key(|(_, v)| std::cmp::Reverse(v.len()));
-
-            let mut top_sta: Vec<(u16, Vec<u8>)> = sta_counts.into_iter().filter(|(_, v)| v.len() >= 5).collect();
-            top_sta.sort_by_key(|(_, v)| std::cmp::Reverse(v.len()));
-
-            println!("\n=== {} ===", name);
-            // Measure baseline APU signature over 25 frames
+        for test_id in 1..=0x58u8 {
             nes.from_save_state_bytes(&base_state).unwrap();
-            let mut base_sig = Vec::new();
-            for _ in 0..25 {
+            let _ = call_subroutine_with_a(&mut nes, 0xC16B, test_id);
+
+            // Fase 1: primeros 30 frames
+            let mut samples_early = Vec::new();
+            for _ in 0..30 {
                 nes.step_frame();
-                base_sig.push((
-                    nes.bus.apu.pulse1.timer_period,
-                    nes.bus.apu.pulse2.timer_period,
-                    nes.bus.apu.triangle.timer_period,
-                ));
+                nes.take_audio_samples(&mut samples_early);
             }
+            let energy_early: f32 = samples_early.iter().map(|s| s.abs()).sum();
 
-            for (sub, imms) in top_jsr.iter().take(6) {
-                let mut distinct_sigs = Vec::new();
-                for &test_id in imms.iter().take(6) {
-                    nes.from_save_state_bytes(&base_state).unwrap();
-                    if call_subroutine_with_a(&mut nes, *sub, test_id) {
-                        let mut sig = Vec::new();
-                        for _ in 0..25 {
-                            nes.step_frame();
-                            sig.push((
-                                nes.bus.apu.pulse1.timer_period,
-                                nes.bus.apu.pulse2.timer_period,
-                                nes.bus.apu.triangle.timer_period,
-                            ));
-                        }
-                        if sig != base_sig && !distinct_sigs.contains(&sig) {
-                            distinct_sigs.push(sig);
-                        }
-                    }
-                }
-                if distinct_sigs.len() >= 2 {
-                    println!(
-                        "  [JSR ${:04X}] ({} unique IDs in ROM) -> {} distinct audio melodies! Sample IDs: {:02X?}",
-                        sub,
-                        imms.len(),
-                        distinct_sigs.len(),
-                        &imms[..imms.len().min(12)]
-                    );
-                }
+            // Fase 2: frames 31..70 (verificar si la música sigue sonando en bucle o si se apagó)
+            let mut samples_late = Vec::new();
+            for _ in 0..40 {
+                nes.step_frame();
+                nes.take_audio_samples(&mut samples_late);
             }
+            let energy_late: f32 = samples_late.iter().map(|s| s.abs()).sum();
 
-            for (addr, imms) in top_sta.iter().take(8) {
-                let mut distinct_sigs = Vec::new();
-                for &test_id in imms.iter().take(6) {
-                    nes.from_save_state_bytes(&base_state).unwrap();
-                    nes.bus.cpu_ram[(*addr as usize) & 0x7FF] = test_id;
-                    let mut sig = Vec::new();
-                    for _ in 0..25 {
-                        nes.step_frame();
-                        sig.push((
-                            nes.bus.apu.pulse1.timer_period,
-                            nes.bus.apu.pulse2.timer_period,
-                            nes.bus.apu.triangle.timer_period,
-                        ));
-                    }
-                    if sig != base_sig && !distinct_sigs.contains(&sig) {
-                        distinct_sigs.push(sig);
-                    }
-                }
-                if distinct_sigs.len() >= 2 {
-                    println!(
-                        "  [STA ${:04X}] ({} unique IDs in ROM) -> {} distinct audio melodies! Sample IDs: {:02X?}",
-                        addr,
-                        imms.len(),
-                        distinct_sigs.len(),
-                        &imms[..imms.len().min(12)]
-                    );
-                }
+            if energy_early > 50.0 && energy_late > 300.0 {
+                println!("  -> BGM (Melodía Continua): ID #0x{:02X} (Early={:.0}, Late={:.0})", test_id, energy_early, energy_late);
+                bgm_list.push(test_id);
+            } else if energy_early > 50.0 && energy_late <= 300.0 {
+                println!("  -> SFX (Efecto Corto):     ID #0x{:02X} (Early={:.0}, Late={:.0})", test_id, energy_early, energy_late);
+                sfx_list.push(test_id);
             }
         }
+
+        println!("\nTotal Melodías Reales (BGM): {} -> {:02X?}", bgm_list.len(), bgm_list);
+        println!("Total Efectos Reales (SFX):  {} -> {:02X?}", sfx_list.len(), sfx_list);
     }
 }
 
