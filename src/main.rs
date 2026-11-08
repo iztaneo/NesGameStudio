@@ -78,6 +78,7 @@ impl eframe::App for NesGameStudioApp {
                             .pick_file()
                         {
                             self.jukebox.playing = false;
+                            self.audio_editor = editors::audio::AudioEditorState::default();
                             match parser::load_c_and_asm_into_project(&path, &mut self.project) {
                                 Ok(msg) => {
                                     self.graphics_editor.invalidate_texture();
@@ -94,6 +95,7 @@ impl eframe::App for NesGameStudioApp {
                             .pick_file()
                         {
                             self.jukebox.playing = false;
+                            self.audio_editor = editors::audio::AudioEditorState::default();
                             match parser::load_nes_rom_into_project(&path, &mut self.project) {
                                 Ok(msg) => {
                                     self.graphics_editor.invalidate_texture();
